@@ -1,0 +1,71 @@
+# C++ GitIgnore
+
+# Object files
+*.o
+*.obj
+
+# Precompiled headers
+*.gch
+
+# Compiled Object file
+*.lo
+
+# Libraries and binary files
+*.so
+*.a
+*.lib
+
+# Debugging output
+core
+
+# Fortran module files
+*.mod
+
+# Visual Studio/Visual C++ generated files
+*.ncb
+*.suo
+*.tlog
+*.log
+*.vspscc
+*.vssscc
+*.user
+*.userosscache
+*.sln.docstates
+
+# Emacs/CVS
+*.#*
+_*
+
+# Linker output
+*.lai
+
+# OS generated files
+.DS_Store
+
+# Windows thumbcache files
+Thumbs.db
+
+# macOS Finder cache files
+.fseventsd-data
+
+# Python generated files
+__pycache__
+
+# C++ development tools
+cmake_cache.txt
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+*.pdb
+*.cod
+
+# QT Creator user files
+*.user
+*.user.*
+
+# Makefile configuration
+Makefile.config
+
+# Compile output
+build/
+out/

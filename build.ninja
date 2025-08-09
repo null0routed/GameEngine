@@ -1,0 +1,62 @@
+# Build configuration for MSVC with Ninja
+builddir = build
+
+# Compiler and linker paths (adjust these to your VS installation)
+msvc_path = D:/Microsoft Visual Studio/2022/VC/Tools/MSVC/14.44.35207
+sdk_path = C:/Program Files (x86)/Windows Kits/10
+sdk_version = 10.0.26100.0
+
+# Compiler flags
+cflags = /nologo /W3 /EHsc /std:c++17 /I"$msvc_path/include" /I"$sdk_path/Include/$sdk_version/ucrt" /I"$sdk_path/Include/$sdk_version/um" /I"$sdk_path/Include/$sdk_version/shared"
+cflags_debug = $cflags /Od /Zi /Fc /MDd /DDEBUG
+cflags_release = $cflags /O2 /MD /DNDEBUG
+
+# Linker flags
+ldflags = /nologo /LIBPATH:"$msvc_path/lib/x64" /LIBPATH:"$sdk_path/Lib/$sdk_version/ucrt/x64" /LIBPATH:"$sdk_path/Lib/$sdk_version/um/x64" /subsystem:windows /MACHINE:x64
+ldflags_debug = $ldflags /DEBUG
+ldflags_release = $ldflags
+
+# Rules
+rule cc
+  command = cl.exe $cflags_debug /Fo$out /c $in
+  description = Compiling $in
+  deps = msvc
+  msvc_deps_prefix = Note: including file:
+
+rule cc_release
+  command = cl.exe $cflags_release /Fo$out /c $in
+  description = Compiling $in (Release)
+  deps = msvc
+  msvc_deps_prefix = Note: including file:
+
+rule link
+  command = link.exe $ldflags_debug /OUT:$out $in user32.lib gdi32.lib onecore.lib
+  description = Linking $out
+
+rule link_release
+  command = link.exe $ldflags_release /OUT:$out $in user32.lib gdi32.lib onecore.lib
+  description = Linking $out (Release)
+
+rule clean
+  command = cmd /c "if exist build rmdir /s /q build"
+  description = Cleaning build directory
+
+rule mkdir
+  command = cmd /c "if not exist $out mkdir $out"
+  description = Creating directory $out
+
+# Build targets
+build $builddir: mkdir
+
+build $builddir/main.obj: cc src/main.cpp | $builddir
+build $builddir/main.exe: link $builddir/main.obj
+
+# Release builds
+build $builddir/main_release.obj: cc_release src/main.cpp | $builddir
+build $builddir/main_release.exe: link_release $builddir/main_release.obj
+
+# Clean target
+build clean: clean
+
+# Default target
+default $builddir/main.exe
