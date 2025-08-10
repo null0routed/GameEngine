@@ -5,13 +5,13 @@
 static bool APP_RUNNING;
 static BITMAPINFO BitmapInfo = {};
 static void *BitmapMemory;
-static int BitmapWidth;
-static int BitmapHeight;
+static i32 BitmapWidth;
+static i32 BitmapHeight;
 
 LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM); // Application Window Procedure
-static void ResizeDIBSection(int, int); // Initialize or resize Device Independant Bitmap
-static void EngineUpdateWindow(HDC, RECT *, int, int, int, int);
-static void RenderGradient(int, int);
+static void ResizeDIBSection(i32, i32); // Initialize or resize Device Independant Bitmap
+static void EngineUpdateWindow(HDC, RECT, i32, i32, i32, i32);
+static void RenderGradient(i32, i32);
 
 int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int ShowCode) {
     
@@ -19,7 +19,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     WNDCLASSEXW WindowClass = {};
     WindowClass.cbSize = sizeof(WNDCLASSEXW);
     WindowClass.hInstance = Instance;
-    WindowClass.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+    WindowClass.style = CS_HREDRAW | CS_VREDRAW;
     WindowClass.lpszClassName = CLASS_NAME;
     WindowClass.lpfnWndProc = WindowProc;
 
@@ -46,8 +46,8 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
 
     ShowWindow(Window, SW_SHOW);
 
-    int XOffset = 0;
-    int YOffset = 0;
+    i32 XOffset = 0;
+    i32 YOffset = 0;
     APP_RUNNING = true;
     while(APP_RUNNING) {
         MSG Message;
@@ -65,9 +65,9 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         HDC DeviceCtx = GetDC(Window);
         RECT ClientRect;
         GetClientRect(Window, &ClientRect);
-        int WindowWidth = ClientRect.right - ClientRect.left;
-        int WindowHeight = ClientRect.bottom - ClientRect.top;
-        EngineUpdateWindow(DeviceCtx, &ClientRect, 0, 0, WindowWidth, WindowHeight);
+        i32 WindowWidth = ClientRect.right - ClientRect.left;
+        i32 WindowHeight = ClientRect.bottom - ClientRect.top;
+        EngineUpdateWindow(DeviceCtx, ClientRect, 0, 0, WindowWidth, WindowHeight);
         ReleaseDC(Window, DeviceCtx);
         
         ++XOffset;
@@ -86,8 +86,8 @@ LRESULT CALLBACK WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, LPAR
             
             RECT ClientRect;
             GetClientRect(WindowHandle, &ClientRect);
-            int width = ClientRect.right - ClientRect.left;
-            int height = ClientRect.bottom - ClientRect.top;
+            i32 width = ClientRect.right - ClientRect.left;
+            i32 height = ClientRect.bottom - ClientRect.top;
             ResizeDIBSection(width, height);
             break;
         } 
@@ -117,10 +117,10 @@ LRESULT CALLBACK WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, LPAR
             RECT ClientRect;
             GetClientRect(WindowHandle, &ClientRect);
 
-            int width = Paint.rcPaint.right - Paint.rcPaint.left;
-            int height = Paint.rcPaint.bottom - Paint.rcPaint.top;
+            i32 width = Paint.rcPaint.right - Paint.rcPaint.left;
+            i32 height = Paint.rcPaint.bottom - Paint.rcPaint.top;
             PatBlt(DeviceCtx, Paint.rcPaint.left, Paint.rcPaint.top, width, height, WHITENESS);
-            EngineUpdateWindow(DeviceCtx, &ClientRect, Paint.rcPaint.left, Paint.rcPaint.top, width, height);
+            EngineUpdateWindow(DeviceCtx, ClientRect, Paint.rcPaint.left, Paint.rcPaint.top, width, height);
             EndPaint(WindowHandle, &Paint);
             break;
         }
@@ -134,7 +134,7 @@ LRESULT CALLBACK WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, LPAR
     return Result;
 }
 
-static void ResizeDIBSection(int width, int height) {
+static void ResizeDIBSection(i32 width, i32 height) {
     if(BitmapMemory) {
         VirtualFree(BitmapMemory, 0, MEM_RELEASE);
     }
@@ -152,8 +152,8 @@ static void ResizeDIBSection(int width, int height) {
     // TODO @null0routed: Should we not free first? Should we free after and fallback to free first
     // if that fails?
 
-    int BytesPerPx = 4;
-    int BitmapMemorySize = (width * height * BytesPerPx);
+    i32 BytesPerPx = 4;
+    i32 BitmapMemorySize = (width * height * BytesPerPx);
 
     BitmapMemory = VirtualAlloc(
         NULL, // Let Win decide where to alloc
@@ -168,7 +168,7 @@ static void ResizeDIBSection(int width, int height) {
     }
 }
 
-static void EngineUpdateWindow(HDC DeviceCtx, RECT *WindowRect, int x, int y, int width, int height) {
+static void EngineUpdateWindow(HDC DeviceCtx, RECT WindowRect, i32 x, i32 y, i32 width, i32 height) {
     
     if (!BitmapMemory) { 
        OutputDebugStringW(L"No BitmapMemory\n");
@@ -176,8 +176,8 @@ static void EngineUpdateWindow(HDC DeviceCtx, RECT *WindowRect, int x, int y, in
        return;
     }
 
-    int WindowWidth = WindowRect->right - WindowRect->left;
-    int WindowHeight = WindowRect->bottom - WindowRect->top;
+    i32 WindowWidth = WindowRect.right - WindowRect.left;
+    i32 WindowHeight = WindowRect.bottom - WindowRect.top;
 
     StretchDIBits(
         DeviceCtx,
@@ -190,14 +190,14 @@ static void EngineUpdateWindow(HDC DeviceCtx, RECT *WindowRect, int x, int y, in
     );
 }
 
-static void RenderGradient(int XOffset, int YOffset) {
-    int BytesPerPx = 4;
-    int Pitch = BitmapWidth * BytesPerPx; 
+static void RenderGradient(i32 XOffset, i32 YOffset) {
+    i32 BytesPerPx = 4;
+    i32 Pitch = BitmapWidth * BytesPerPx; 
     u8 *Row = (u8 *)BitmapMemory;
 
-    for (int Y = 0; Y < BitmapHeight; ++Y) {
+    for (i32 Y = 0; Y < BitmapHeight; ++Y) {
         u32 *Pixel = (u32 *)Row;
-        for (int X = 0; X < BitmapWidth; ++X) {
+        for (i32 X = 0; X < BitmapWidth; ++X) {
             u8 Blue = (X + XOffset);
             u8 Green = (Y + YOffset);
             *Pixel++ = (Green << 8) | Blue;

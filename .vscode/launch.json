@@ -71,7 +71,8 @@
             "logging": {
                 "moduleLoad": false,
                 "trace": false
-            }
+            },
+            "preLaunchTask": "Clean"
         }
     ]
 }

@@ -8,7 +8,7 @@ sdk_version = 10.0.26100.0
 
 # Compiler flags
 cflags = /nologo /W3 /EHsc /std:c++17 /I"$msvc_path/include" /I"$sdk_path/Include/$sdk_version/ucrt" /I"$sdk_path/Include/$sdk_version/um" /I"$sdk_path/Include/$sdk_version/shared"
-cflags_debug = $cflags /Od /Zi /Fc /MDd /DDEBUG
+cflags_debug = $cflags /Od /Zi /FAsc /MDd /DDEBUG
 cflags_release = $cflags /O2 /MD /DNDEBUG
 
 # Linker flags
