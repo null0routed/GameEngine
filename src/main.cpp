@@ -1,4 +1,8 @@
+#define UNICODE
+#define _UNICODE
+
 #include <Windows.h>
+#include <Xinput.h>
 #include "types.h"
 
 struct W32_OffscreenBuffer {
@@ -19,13 +23,46 @@ struct W32_WindowDimensions {
 bool APP_RUNNING;
 static W32_OffscreenBuffer GlobalBackBuffer;
 
-LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM); // Application Window Procedure
+LRESULT CALLBACK W32_WindowProc(HWND, UINT, WPARAM, LPARAM); // Application Window Procedure
 static void W32_ResizeDIBSection(W32_OffscreenBuffer *, i32, i32); // Initialize or resize Device Independant Bitmap
-static void W32_DisplayBufferInWindow(HDC, i32, i32, W32_OffscreenBuffer, i32, i32, i32, i32);
+static void W32_DisplayBufferInWindow(HDC, i32, i32, W32_OffscreenBuffer);
 static void W32_RenderGradient(W32_OffscreenBuffer, i32, i32);
-static W32_WindowDimensions W32_GetWindowDimensions(HWND); 
+static W32_WindowDimensions W32_GetWindowDimensions(HWND);
+
+// External definitions for XInput
+// XInputGetState
+#define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD, XINPUT_STATE*)
+typedef X_INPUT_GET_STATE(W32_XInputGetState);
+X_INPUT_GET_STATE(XInputGetStateStub) {
+    return 0;
+}
+static W32_XInputGetState *XInputGetState_ = XInputGetStateStub;
+#define XInputGetState XInputGetState_
+
+// XInputGetState
+#define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD, XINPUT_VIBRATION*)
+typedef X_INPUT_SET_STATE(W32_XInputSetState);
+X_INPUT_SET_STATE(XInputSetStateStub) {
+    return 0;
+}
+static W32_XInputSetState *XInputSetState_ = XInputSetStateStub;
+#define XInputSetState XInputSetState_
+
+static void W32_LoadXInput() {
+    HMODULE XInputLib = LoadLibrary(L"xinput1_4.dll");
+    if (!XInputLib) {
+        OutputDebugStringW(L"Could not load XInput library.\n");
+        return;
+    }
+
+    XInputGetState = (W32_XInputGetState *)GetProcAddress(XInputLib, "XInputGetState");
+    XInputSetState = (W32_XInputSetState *)GetProcAddress(XInputLib, "XInputSetState");
+}
 
 int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int ShowCode) {
+    
+    // Initialization
+    W32_LoadXInput(); 
     
     LPCWSTR CLASS_NAME = L"GameEngine";
     WNDCLASSEXW WindowClass = {};
@@ -33,7 +70,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     WindowClass.hInstance = Instance;
     WindowClass.style = CS_HREDRAW | CS_VREDRAW;
     WindowClass.lpszClassName = CLASS_NAME;
-    WindowClass.lpfnWndProc = WindowProc;
+    WindowClass.lpfnWndProc = W32_WindowProc;
 
     W32_ResizeDIBSection(&GlobalBackBuffer, 1280, 720);
 
@@ -63,6 +100,8 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     i32 XOffset = 0;
     i32 YOffset = 0;
     APP_RUNNING = true;
+
+    HDC DeviceCtx = GetDC(Window); // Get DC here because we created window class with "own dc"
     MSG Message; // Declared here to reduce allocations during message loop
     
     while(APP_RUNNING) {
@@ -75,21 +114,50 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
             DispatchMessage(&Message);
         }
 
+        // TODO @null0routed: Should we poll this more frequently?
+        for (DWORD CtrlrIndex = 0; CtrlrIndex < XUSER_MAX_COUNT; ++CtrlrIndex) {
+            XINPUT_STATE ControllerState;
+            if (XInputGetState(CtrlrIndex, &ControllerState) != ERROR_SUCCESS) {
+                OutputDebugStringW(L"Could not get controller state\n");
+            }
+       
+            bool Up = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP); 
+            bool Down = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN); 
+            bool Left = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT); 
+            bool Right = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT); 
+            bool Start = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_START); 
+            bool Back = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_BACK); 
+            bool LeftShoulder = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER); 
+            bool RightShoulder = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER); 
+            bool AButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_A); 
+            bool BButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_B); 
+            bool XButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_X); 
+            bool YButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_Y); 
+            
+            i16 StickX = ControllerState.Gamepad.sThumbLX;
+            i16 StickY = ControllerState.Gamepad.sThumbLY;
+        }
+
+        XINPUT_VIBRATION Vibration;
+        Vibration.wLeftMotorSpeed = 60000;
+        Vibration.wRightMotorSpeed = 60000;
+        XInputSetState(0, &Vibration);
+
         W32_RenderGradient(GlobalBackBuffer, XOffset, YOffset);
 
-        HDC DeviceCtx = GetDC(Window);
         W32_WindowDimensions Dimensions = W32_GetWindowDimensions(Window);
-        W32_DisplayBufferInWindow(DeviceCtx, Dimensions.Width, Dimensions.Height, GlobalBackBuffer, 0, 0, Dimensions.Width, Dimensions.Height);
-        ReleaseDC(Window, DeviceCtx);
+        W32_DisplayBufferInWindow(DeviceCtx, Dimensions.Width, Dimensions.Height, GlobalBackBuffer);
         
         ++XOffset;
         ++YOffset;
     }  
 
+    ReleaseDC(Window, DeviceCtx);
+
     return 0;
 }
 
-LRESULT CALLBACK WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK W32_WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, LPARAM lParam) {
     LRESULT Result = 0;
     
     switch (Message) {
@@ -118,18 +186,67 @@ LRESULT CALLBACK WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, LPAR
             OutputDebugStringW(L"WM_ACTIVATEAPP\n");
             break;
         }
+
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_KEYDOWN:
+        case WM_KEYUP: {
+            u32 VKCode = wParam;
+            bool WasDown = ((lParam & (1 << 30)) != 0);
+            bool IsDown = ((lParam & (1 << 31)) == 0);
+
+            switch (VKCode) {
+                case VK_UP: {
+                    OutputDebugStringW(L"VK_UP\n");
+                    break;
+                }
+                case VK_DOWN: {
+                    OutputDebugStringW(L"VK_DOWN\n");
+                    break;
+                }
+                case VK_LEFT: {
+                    OutputDebugStringW(L"VK_LEFT\n");
+                    break;
+                }
+                case VK_RIGHT: {
+                    OutputDebugStringW(L"VK_RIGHT\n");
+                    break;
+                }
+                case VK_ESCAPE: {
+                    OutputDebugStringW(L"VK_ESCAPE\n");
+                    APP_RUNNING = false;
+                    break;
+                }
+                case VK_SPACE: {
+                    OutputDebugStringW(L"VK_SPACE\n");
+                    break;
+                } 
+                case 'W': {
+                    OutputDebugStringW(L"W\n");
+                    break;
+                }
+                case 'A': {
+                    OutputDebugStringW(L"A\n");
+                    break;
+                }
+                case 'S': {
+                    OutputDebugStringW(L"S\n");
+                    break;
+                }
+                case 'D': {
+                    OutputDebugStringW(L"D\n");
+                    break;
+                }
+                default:
+                    break;
+            }
         case WM_PAINT: {
             PAINTSTRUCT Paint;
             HDC DeviceCtx = BeginPaint(WindowHandle, &Paint);
-            i32 width = Paint.rcPaint.right - Paint.rcPaint.left;
-            i32 height = Paint.rcPaint.bottom - Paint.rcPaint.top;
-           
-            RECT ClientRect;
-            GetClientRect(WindowHandle, &ClientRect);            
-
+            
             W32_WindowDimensions Dimensions = W32_GetWindowDimensions(WindowHandle);
-
-            W32_DisplayBufferInWindow(DeviceCtx, Dimensions.Width, Dimensions.Height, GlobalBackBuffer, Paint.rcPaint.left, Paint.rcPaint.top, width, height);
+            W32_DisplayBufferInWindow(DeviceCtx, Dimensions.Width, Dimensions.Height, GlobalBackBuffer);
+            
             EndPaint(WindowHandle, &Paint);
             break;
         }
@@ -154,7 +271,7 @@ static void W32_ResizeDIBSection(W32_OffscreenBuffer *Buffer, i32 width, i32 hei
    
     Buffer->BitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     Buffer->BitmapInfo.bmiHeader.biWidth = Buffer->BitmapWidth;
-    Buffer->BitmapInfo.bmiHeader.biHeight = -Buffer->BitmapHeight;
+    Buffer->BitmapInfo.bmiHeader.biHeight = -Buffer->BitmapHeight; // Treats the bitmap as top-down, not bottom up. 0,0 = top left
     Buffer->BitmapInfo.bmiHeader.biPlanes = 1;
     Buffer->BitmapInfo.bmiHeader.biBitCount = 32;
     Buffer->BitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression so we can write as fast as possible
@@ -179,7 +296,7 @@ static void W32_ResizeDIBSection(W32_OffscreenBuffer *Buffer, i32 width, i32 hei
     Buffer->Pitch = Buffer->BitmapWidth * Buffer->BytesPerPx; 
 }
 
-static void W32_DisplayBufferInWindow(HDC DeviceCtx, i32 windowWidth, i32 windowHeight, W32_OffscreenBuffer Buffer, i32 x, i32 y, i32 width, i32 height) {
+static void W32_DisplayBufferInWindow(HDC DeviceCtx, i32 windowWidth, i32 windowHeight, W32_OffscreenBuffer Buffer) {
     
     if (!Buffer.BitmapMemory) { 
        OutputDebugStringW(L"No BitmapMemory\n");
