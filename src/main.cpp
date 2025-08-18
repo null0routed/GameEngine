@@ -25,43 +25,59 @@ static W32_OffscreenBuffer GlobalBackBuffer;
 
 LRESULT CALLBACK W32_WindowProc(HWND, UINT, WPARAM, LPARAM); // Application Window Procedure
 static void W32_ResizeDIBSection(W32_OffscreenBuffer *, i32, i32); // Initialize or resize Device Independant Bitmap
-static void W32_DisplayBufferInWindow(HDC, i32, i32, W32_OffscreenBuffer);
-static void W32_RenderGradient(W32_OffscreenBuffer, i32, i32);
+static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *, HDC, i32, i32);
+static void W32_RenderGradient(W32_OffscreenBuffer *, i32, i32);
 static W32_WindowDimensions W32_GetWindowDimensions(HWND);
 
 // External definitions for XInput
+
+/*
+Probably should change this in the future to:
+# define XInputGetState XInputGetState_
+typedef DWORD (WINAPI W32_XInputGetState_t *)(DWORD, XINPUT_STATE*)
+static DWORD WINAPI W32_XInputGetStateStub(DWORD dwUserIndex, XINPUT_STATE *pStateInfo) {
+    return 0;
+} 
+static W32_XInputGetState_t XInputGetState_ = XInputGetStateStub
+
+*/
+
 // XInputGetState
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD, XINPUT_STATE*)
-typedef X_INPUT_GET_STATE(W32_XInputGetState);
+typedef X_INPUT_GET_STATE(W32_XInputGetState_t);
 X_INPUT_GET_STATE(XInputGetStateStub) {
     return 0;
 }
-static W32_XInputGetState *XInputGetState_ = XInputGetStateStub;
+static W32_XInputGetState_t *XInputGetState_ = XInputGetStateStub;
 #define XInputGetState XInputGetState_
 
 // XInputGetState
 #define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD, XINPUT_VIBRATION*)
-typedef X_INPUT_SET_STATE(W32_XInputSetState);
+typedef X_INPUT_SET_STATE(W32_XInputSetState_t);
 X_INPUT_SET_STATE(XInputSetStateStub) {
     return 0;
 }
-static W32_XInputSetState *XInputSetState_ = XInputSetStateStub;
+static W32_XInputSetState_t *XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
 
 static void W32_LoadXInput() {
     HMODULE XInputLib = LoadLibrary(L"xinput1_4.dll");
     if (!XInputLib) {
-        OutputDebugStringW(L"Could not load XInput library.\n");
+        OutputDebugString(L"Could not load XInput library.\n");
         return;
     }
 
-    XInputGetState = (W32_XInputGetState *)GetProcAddress(XInputLib, "XInputGetState");
-    XInputSetState = (W32_XInputSetState *)GetProcAddress(XInputLib, "XInputSetState");
+    XInputGetState = (W32_XInputGetState_t *)GetProcAddress(XInputLib, "XInputGetState");
+    if (!XInputGetState) { XInputGetState = XInputGetStateStub; } 
+    
+    XInputSetState = (W32_XInputSetState_t *)GetProcAddress(XInputLib, "XInputSetState");
+    if (!XInputSetState) { XInputSetState = XInputSetStateStub; }
 }
 
 int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int ShowCode) {
     
     // Initialization
+    SetSearchPathMode(BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT); // Ensure safe search paths for LoadLibrary
     W32_LoadXInput(); 
     
     LPCWSTR CLASS_NAME = L"GameEngine";
@@ -74,7 +90,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
 
     W32_ResizeDIBSection(&GlobalBackBuffer, 1280, 720);
 
-    if (!RegisterClassExW(&WindowClass)) {
+    if (!RegisterClassEx(&WindowClass)) {
         return -1;
     }
 
@@ -91,7 +107,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     );
 
     if (!Window) {
-        OutputDebugStringW(L"Window Failed\n");
+        OutputDebugString(L"Window Failed\n");
         return -1;
     }
 
@@ -118,7 +134,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         for (DWORD CtrlrIndex = 0; CtrlrIndex < XUSER_MAX_COUNT; ++CtrlrIndex) {
             XINPUT_STATE ControllerState;
             if (XInputGetState(CtrlrIndex, &ControllerState) != ERROR_SUCCESS) {
-                OutputDebugStringW(L"Could not get controller state\n");
+                OutputDebugString(L"Could not get controller state\n");
             }
        
             bool Up = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP); 
@@ -143,10 +159,10 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         Vibration.wRightMotorSpeed = 60000;
         XInputSetState(0, &Vibration);
 
-        W32_RenderGradient(GlobalBackBuffer, XOffset, YOffset);
+        W32_RenderGradient(&GlobalBackBuffer, XOffset, YOffset);
 
         W32_WindowDimensions Dimensions = W32_GetWindowDimensions(Window);
-        W32_DisplayBufferInWindow(DeviceCtx, Dimensions.Width, Dimensions.Height, GlobalBackBuffer);
+        W32_DisplayBufferInWindow(&GlobalBackBuffer, DeviceCtx, Dimensions.Width, Dimensions.Height);
         
         ++XOffset;
         ++YOffset;
@@ -162,28 +178,31 @@ LRESULT CALLBACK W32_WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, 
     
     switch (Message) {
         case WM_SIZE: {
-            OutputDebugStringW(L"WM_SIZE\n");
+            OutputDebugString(L"WM_SIZE\n");
             
             break;
         } 
+        
         case WM_DESTROY: {
-            OutputDebugStringW(L"WM_DESTROY\n");
+            OutputDebugString(L"WM_DESTROY\n");
             // This is a good place to post the quit message to exit the application.
             // PostQuitMessage(0);
             // TODO @null0routed: Handle this as an error - recreate window?
             APP_RUNNING = false;
             break;
         }
+        
         case WM_CLOSE: {
-            OutputDebugStringW(L"WM_CLOSE\n");
+            OutputDebugString(L"WM_CLOSE\n");
             // We should destroy the window, which will trigger WM_DESTROY.
             // DestroyWindow(WindowHandle);
             // TODO @null0routed: Handle this as a message to the user
             APP_RUNNING = false;
             break;
         }
+        
         case WM_ACTIVATEAPP: {
-            OutputDebugStringW(L"WM_ACTIVATEAPP\n");
+            OutputDebugString(L"WM_ACTIVATEAPP\n");
             break;
         }
 
@@ -191,65 +210,69 @@ LRESULT CALLBACK W32_WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, 
         case WM_SYSKEYUP:
         case WM_KEYDOWN:
         case WM_KEYUP: {
-            u32 VKCode = wParam;
+            u64 VKCode = wParam;
             bool WasDown = ((lParam & (1 << 30)) != 0);
             bool IsDown = ((lParam & (1 << 31)) == 0);
 
             switch (VKCode) {
                 case VK_UP: {
-                    OutputDebugStringW(L"VK_UP\n");
+                    OutputDebugString(L"VK_UP\n");
                     break;
                 }
                 case VK_DOWN: {
-                    OutputDebugStringW(L"VK_DOWN\n");
+                    OutputDebugString(L"VK_DOWN\n");
                     break;
                 }
                 case VK_LEFT: {
-                    OutputDebugStringW(L"VK_LEFT\n");
+                    OutputDebugString(L"VK_LEFT\n");
                     break;
                 }
                 case VK_RIGHT: {
-                    OutputDebugStringW(L"VK_RIGHT\n");
+                    OutputDebugString(L"VK_RIGHT\n");
                     break;
                 }
                 case VK_ESCAPE: {
-                    OutputDebugStringW(L"VK_ESCAPE\n");
+                    OutputDebugString(L"VK_ESCAPE\n");
                     APP_RUNNING = false;
                     break;
                 }
                 case VK_SPACE: {
-                    OutputDebugStringW(L"VK_SPACE\n");
+                    OutputDebugString(L"VK_SPACE\n");
                     break;
                 } 
                 case 'W': {
-                    OutputDebugStringW(L"W\n");
+                    OutputDebugString(L"W\n");
                     break;
                 }
                 case 'A': {
-                    OutputDebugStringW(L"A\n");
+                    OutputDebugString(L"A\n");
                     break;
                 }
                 case 'S': {
-                    OutputDebugStringW(L"S\n");
+                    OutputDebugString(L"S\n");
                     break;
                 }
                 case 'D': {
-                    OutputDebugStringW(L"D\n");
+                    OutputDebugString(L"D\n");
                     break;
                 }
                 default:
                     break;
             }
+            break;
+        }
+        
         case WM_PAINT: {
             PAINTSTRUCT Paint;
             HDC DeviceCtx = BeginPaint(WindowHandle, &Paint);
             
             W32_WindowDimensions Dimensions = W32_GetWindowDimensions(WindowHandle);
-            W32_DisplayBufferInWindow(DeviceCtx, Dimensions.Width, Dimensions.Height, GlobalBackBuffer);
+            W32_DisplayBufferInWindow(&GlobalBackBuffer, DeviceCtx, Dimensions.Width, Dimensions.Height);
             
             EndPaint(WindowHandle, &Paint);
             break;
         }
+        
         default: {
             // Let the default window procedure handle any messages we don't care about.
             Result = DefWindowProc(WindowHandle, Message, wParam, lParam);
@@ -289,41 +312,40 @@ static void W32_ResizeDIBSection(W32_OffscreenBuffer *Buffer, i32 width, i32 hei
     );
 
     if (!Buffer->BitmapMemory) {
-        OutputDebugStringW(L"VirtualAlloc for the Bitmap memory failed\n");
+        OutputDebugString(L"VirtualAlloc for the Bitmap memory failed\n");
         APP_RUNNING = false;
     }
 
     Buffer->Pitch = Buffer->BitmapWidth * Buffer->BytesPerPx; 
 }
 
-static void W32_DisplayBufferInWindow(HDC DeviceCtx, i32 windowWidth, i32 windowHeight, W32_OffscreenBuffer Buffer) {
+static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *Buffer, HDC DeviceCtx, i32 windowWidth, i32 windowHeight) {
     
-    if (!Buffer.BitmapMemory) { 
-       OutputDebugStringW(L"No BitmapMemory\n");
+    if (!Buffer->BitmapMemory) { 
+       OutputDebugString(L"No BitmapMemory\n");
        APP_RUNNING = false;
        return;
     }
 
-    // Correct the aspect ratio
-    
+    // TODO @null0routed: Correct the aspect ratio here
 
     StretchDIBits(
         DeviceCtx,
         0, 0, windowWidth, windowHeight,
-        0, 0, Buffer.BitmapWidth, Buffer.BitmapHeight,
-        Buffer.BitmapMemory,
-        &Buffer.BitmapInfo,
+        0, 0, Buffer->BitmapWidth, Buffer->BitmapHeight,
+        Buffer->BitmapMemory,
+        &Buffer->BitmapInfo,
         DIB_RGB_COLORS,
         SRCCOPY
     );
 }
 
-static void W32_RenderGradient(W32_OffscreenBuffer Buffer, i32 XOffset, i32 YOffset) {
-    u8 *Row = (u8 *)Buffer.BitmapMemory;
+static void W32_RenderGradient(W32_OffscreenBuffer *Buffer, i32 XOffset, i32 YOffset) {
+    u8 *Row = (u8 *)Buffer->BitmapMemory;
 
-    for (i32 Y = 0; Y < Buffer.BitmapHeight; ++Y) {
+    for (i32 Y = 0; Y < Buffer->BitmapHeight; ++Y) {
         u32 *Pixel = (u32 *)Row;
-        for (i32 X = 0; X < Buffer.BitmapWidth; ++X) {
+        for (i32 X = 0; X < Buffer->BitmapWidth; ++X) {
             u8 Blue = (X + XOffset);
             u8 Green = (Y + YOffset);
             *Pixel++ = (Green << 8) | Blue;
@@ -331,7 +353,7 @@ static void W32_RenderGradient(W32_OffscreenBuffer Buffer, i32 XOffset, i32 YOff
 
         // Can do less allocation with:
         // Row = (u8 *)Pixel;
-        Row += Buffer.Pitch;
+        Row += Buffer->Pitch;
     }
 }
 
