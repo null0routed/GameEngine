@@ -46,7 +46,7 @@ static W32_XInputGetState_t XInputGetState_ = XInputGetStateStub
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD, XINPUT_STATE*)
 typedef X_INPUT_GET_STATE(W32_XInputGetState_t);
 X_INPUT_GET_STATE(XInputGetStateStub) {
-    return 0;
+    return ERROR_DEVICE_NOT_CONNECTED;
 }
 static W32_XInputGetState_t *XInputGetState_ = XInputGetStateStub;
 #define XInputGetState XInputGetState_
@@ -55,7 +55,7 @@ static W32_XInputGetState_t *XInputGetState_ = XInputGetStateStub;
 #define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD, XINPUT_VIBRATION*)
 typedef X_INPUT_SET_STATE(W32_XInputSetState_t);
 X_INPUT_SET_STATE(XInputSetStateStub) {
-    return 0;
+    return ERROR_DEVICE_NOT_CONNECTED;
 }
 static W32_XInputSetState_t *XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
@@ -66,6 +66,8 @@ static void W32_LoadXInput() {
         OutputDebugString(L"Could not load XInput library.\n");
         return;
     }
+
+    // TODO @null0routed: Could fallback to a previous XInput library here
 
     XInputGetState = (W32_XInputGetState_t *)GetProcAddress(XInputLib, "XInputGetState");
     if (!XInputGetState) { XInputGetState = XInputGetStateStub; } 
@@ -135,6 +137,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
             XINPUT_STATE ControllerState;
             if (XInputGetState(CtrlrIndex, &ControllerState) != ERROR_SUCCESS) {
                 OutputDebugString(L"Could not get controller state\n");
+                continue;
             }
        
             bool Up = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP); 
@@ -207,14 +210,13 @@ LRESULT CALLBACK W32_WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, 
         }
 
         case WM_SYSKEYDOWN:
-        case WM_SYSKEYUP:
+        case WM_SYSKEYUP: 
         case WM_KEYDOWN:
         case WM_KEYUP: {
-            u64 VKCode = wParam;
             bool WasDown = ((lParam & (1 << 30)) != 0);
             bool IsDown = ((lParam & (1 << 31)) == 0);
 
-            switch (VKCode) {
+            switch (wParam) {
                 case VK_UP: {
                     OutputDebugString(L"VK_UP\n");
                     break;
@@ -238,6 +240,14 @@ LRESULT CALLBACK W32_WindowProc(HWND WindowHandle, UINT Message, WPARAM wParam, 
                 }
                 case VK_SPACE: {
                     OutputDebugString(L"VK_SPACE\n");
+                    break;
+                }
+                case VK_F4: {
+                    // Check if the ALT key is pressed
+                    if ((lParam & (1 << 29)) != 0) {
+                        OutputDebugString(L"ALT-F4\n");
+                        APP_RUNNING = false;
+                    }
                     break;
                 } 
                 case 'W': {
