@@ -15,6 +15,7 @@ cflags_release = $cflags /O2 /MD /DNDEBUG
 ldflags = /nologo /LIBPATH:"$msvc_path/lib/x64" /LIBPATH:"$sdk_path/Lib/$sdk_version/ucrt/x64" /LIBPATH:"$sdk_path/Lib/$sdk_version/um/x64" /subsystem:windows /MACHINE:x64
 ldflags_debug = $ldflags /DEBUG
 ldflags_release = $ldflags
+ldflags_libs = user32.lib gdi32.lib onecore.lib ole32.lib
 
 # Rules
 rule cc
@@ -30,11 +31,11 @@ rule cc_release
   msvc_deps_prefix = Note: including file:
 
 rule link
-  command = link.exe $ldflags_debug /OUT:$out $in user32.lib gdi32.lib onecore.lib
+  command = link.exe $ldflags_debug /OUT:$out $in $ldflags_libs
   description = Linking $out
 
 rule link_release
-  command = link.exe $ldflags_release /OUT:$out $in user32.lib gdi32.lib onecore.lib
+  command = link.exe $ldflags_release /OUT:$out $in $ldflags_libs
   description = Linking $out (Release)
 
 rule clean

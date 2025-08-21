@@ -3,6 +3,9 @@
 
 #include <Windows.h>
 #include <Xinput.h>
+#include <dsound.h>
+#include <combaseapi.h>
+#include <xaudio2.h>
 #include "types.h"
 
 struct W32_OffscreenBuffer {
@@ -19,29 +22,38 @@ struct W32_WindowDimensions {
     i32 Height;
 };
 
+struct W32_AudioEngine {
+    IXAudio2 *XAudio2;
+    IXAudio2MasteringVoice *MasteringVoice;
+    WAVEFORMATEX WaveFormat;
+};
+
 // TODO @null0routed: Refactor this later
 bool APP_RUNNING;
 static W32_OffscreenBuffer GlobalBackBuffer;
+static LPDIRECTSOUNDBUFFER GlobalSoundBuffer;
+static W32_AudioEngine GlobalAudioEngine;
 
 LRESULT CALLBACK W32_WindowProc(HWND, UINT, WPARAM, LPARAM); // Application Window Procedure
 static void W32_ResizeDIBSection(W32_OffscreenBuffer *, i32, i32); // Initialize or resize Device Independant Bitmap
 static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *, HDC, i32, i32);
 static void W32_RenderGradient(W32_OffscreenBuffer *, i32, i32);
 static W32_WindowDimensions W32_GetWindowDimensions(HWND);
+static void W32_InitDSound(HWND, i32, i32);
+static void W32_InitXAudio2(u32, u32);
+int W32_XAudioGenerateSquareWave(float, i16, int); 
 
-// External definitions for XInput
-
-/*
+/* NOTE @null0routed
 Probably should change this in the future to:
-# define XInputGetState XInputGetState_
+# define XInputGetState _XInputGetState
 typedef DWORD (WINAPI W32_XInputGetState_t *)(DWORD, XINPUT_STATE*)
 static DWORD WINAPI W32_XInputGetStateStub(DWORD dwUserIndex, XINPUT_STATE *pStateInfo) {
     return 0;
 } 
-static W32_XInputGetState_t XInputGetState_ = XInputGetStateStub
-
+static W32_XInputGetState_t _XInputGetState = XInputGetStateStub
 */
 
+// External definitions for XInput
 // XInputGetState
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD, XINPUT_STATE*)
 typedef X_INPUT_GET_STATE(W32_XInputGetState_t);
@@ -59,6 +71,12 @@ X_INPUT_SET_STATE(XInputSetStateStub) {
 }
 static W32_XInputSetState_t *XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
+
+// External definitions for DirectSound
+typedef HRESULT WINAPI DirectSoundCreateFn(LPCGUID, LPDIRECTSOUND *, LPUNKNOWN);
+
+// External definitions for XAudio2
+typedef HRESULT XAudio2CreateFn(IXAudio2 **, u32, XAUDIO2_PROCESSOR);
 
 static void W32_LoadXInput() {
     HMODULE XInputLib = LoadLibrary(L"xinput1_4.dll");
@@ -78,10 +96,19 @@ static void W32_LoadXInput() {
 
 int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int ShowCode) {
     
-    // Initialization
+    // Initialization setup
     SetSearchPathMode(BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT); // Ensure safe search paths for LoadLibrary
-    W32_LoadXInput(); 
+    if (FAILED(CoInitializeEx(NULL, COINIT_MULTITHREADED))) {
+        OutputDebugString(L"Could not initialize COM\n");
+        CoUninitialize();
+        return -1;
+    }
     
+    // Load initial libraries 
+    W32_LoadXInput();
+    W32_InitXAudio2(2, 48000);    
+
+    // Generate main window and class
     LPCWSTR CLASS_NAME = L"GameEngine";
     WNDCLASSEXW WindowClass = {};
     WindowClass.cbSize = sizeof(WNDCLASSEXW);
@@ -115,9 +142,22 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
 
     ShowWindow(Window, SW_SHOW);
 
+    // Graphics vars
     i32 XOffset = 0;
     i32 YOffset = 0;
+    
+    // Sound vars
+    i32 SquareWavePeriod = 48000/256;
+    i32 BytesPerSample = sizeof(i16) * 2;
+    i32 BufferSize = 48000 * BytesPerSample;
+    u32 RunningSampleIdx = 0;
+
+    // Application vars
     APP_RUNNING = true;
+
+    // Initialize DirectSound
+    W32_InitDSound(Window, 48000*sizeof(i16)*2, 48000);
+    GlobalSoundBuffer->Play(0, 0, DSBPLAY_LOOPING);
 
     HDC DeviceCtx = GetDC(Window); // Get DC here because we created window class with "own dc"
     MSG Message; // Declared here to reduce allocations during message loop
@@ -164,6 +204,48 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
 
         W32_RenderGradient(&GlobalBackBuffer, XOffset, YOffset);
 
+        // XAudio2 Sound Test
+        W32_XAudioGenerateSquareWave(440.0f, 3000.0f, 2);
+
+        // Sound output test
+        DWORD PlayCursorPos;
+        DWORD WriteCursorPos;
+        GlobalSoundBuffer->GetCurrentPosition(&PlayCursorPos, &WriteCursorPos);
+
+        void *Region1, *Region2;
+        DWORD Region1Size, Region2Size;
+        DWORD BytesToWrite = 0;
+
+        DWORD ByteToLock = RunningSampleIdx * BytesPerSample % BufferSize;
+        if (ByteToLock > PlayCursorPos) {
+            BytesToWrite = BufferSize - ByteToLock;
+            BytesToWrite += PlayCursorPos;
+        } else {
+            BytesToWrite = PlayCursorPos - ByteToLock;
+        }
+
+        if(FAILED(GlobalSoundBuffer->Lock(ByteToLock, BytesToWrite, &Region1, &Region1Size, &Region2, &Region2Size, NULL))) {
+            OutputDebugString(L"Could not lock buffer\n");
+            continue;
+        }
+
+        // TODO @null0routed: Assert region 1 / region 2 sizes are valid
+        i32 *SampleOut = (i32 *)Region1;
+        DWORD Region1SampleCount = Region1Size / BytesPerSample;
+        for (DWORD idx = 0; idx < Region1SampleCount; ++idx) {
+            i32 SquareWaveOutput = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
+            *SampleOut++ = (SquareWaveOutput << (sizeof(i16)*8)) & SquareWaveOutput;
+        }
+        
+        DWORD Region2SampleCount = Region2Size / BytesPerSample;
+        i32 *SampleOutR2 = (i32 *)Region2;
+        for (DWORD idx = 0; idx < (Region2Size/sizeof(i32)); ++idx) {
+            i32 SquareWaveOutputR2 = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
+            *SampleOutR2++ = (SquareWaveOutputR2 << (sizeof(i16)*8)) & SquareWaveOutputR2;
+        }
+
+        GlobalSoundBuffer->Unlock(Region1, Region1Size, Region2, Region2Size);
+        
         W32_WindowDimensions Dimensions = W32_GetWindowDimensions(Window);
         W32_DisplayBufferInWindow(&GlobalBackBuffer, DeviceCtx, Dimensions.Width, Dimensions.Height);
         
@@ -375,4 +457,210 @@ static W32_WindowDimensions W32_GetWindowDimensions(HWND window) {
     Dimensions.Width = ClientRect.right - ClientRect.left;
     Dimensions.Height = ClientRect.bottom - ClientRect.top;
     return Dimensions;
-} 
+}
+
+static void W32_InitDSound(HWND Window, i32 BufferSize, i32 SamplesPerSec) {
+    // Load the library
+    HMODULE DSoundLib = LoadLibrary(L"dsound.dll");
+    if (!DSoundLib) {
+        OutputDebugString(L"Could not load DSound library.\n");
+        return;
+    }
+
+    // Get a DirectSound object + cooperative mode
+   DirectSoundCreateFn *DirectSoundCreate = (DirectSoundCreateFn *)GetProcAddress(DSoundLib, "DirectSoundCreate");
+    if (!DirectSoundCreate) {
+        OutputDebugString(L"Could not get DirectSoundCreate.\n");
+        return;
+    }
+    
+    LPDIRECTSOUND DirectSound;
+    if (FAILED(DirectSoundCreate(0, &DirectSound, 0))) {
+        OutputDebugString(L"Could not create DirectSound.\n");
+        return;
+    }
+
+    if (FAILED(DirectSound->SetCooperativeLevel(Window, DSSCL_PRIORITY))) {
+        OutputDebugString(L"Could not set cooperative level.\n");
+        return;
+    }
+   
+    // Create Wave Format for Buffers
+    WAVEFORMATEX WaveFormat = {};
+    WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
+    WaveFormat.nChannels = 2;
+    WaveFormat.nSamplesPerSec = SamplesPerSec;
+    WaveFormat.wBitsPerSample = 16;
+    WaveFormat.nBlockAlign = (WaveFormat.nChannels * WaveFormat.wBitsPerSample) / 8;
+    WaveFormat.cbSize = 0;
+    WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec * WaveFormat.nBlockAlign;
+    
+    // Create a primary buffer
+    LPDIRECTSOUNDBUFFER PrimaryBuffer;
+    DSBUFFERDESC BufferDescription = {};
+    BufferDescription.dwSize = sizeof(DSBUFFERDESC);
+    BufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
+    BufferDescription.dwBufferBytes = 0;
+    if (FAILED(DirectSound->CreateSoundBuffer(&BufferDescription, &PrimaryBuffer, 0))) {
+        OutputDebugString(L"Could not create primary buffer.\n");
+        return;
+    }
+    
+    if (FAILED(PrimaryBuffer->SetFormat(&WaveFormat))) {
+        OutputDebugString(L"Could not set primary buffer format.\n");
+        return;
+    }
+     
+    // Create a secondary buffer
+    DSBUFFERDESC SecBufferDescription = {};
+    SecBufferDescription.dwSize = sizeof(DSBUFFERDESC);
+    SecBufferDescription.dwFlags = 0;
+    SecBufferDescription.dwBufferBytes = BufferSize;
+    SecBufferDescription.lpwfxFormat = &WaveFormat;
+
+    if (FAILED(DirectSound->CreateSoundBuffer(&SecBufferDescription, &GlobalSoundBuffer, 0))) {
+        OutputDebugString(L"Could not create secondary buffer.\n");
+        return;
+    }
+
+    OutputDebugString(L"Secondary buffer created successfully.\n");
+    return;
+}
+
+void W32_InitXAudio2(u32 NumChannels, u32 SamplesPerSec) {
+    // Load the XAudio2 library
+    HMODULE XAudio2Lib = LoadLibrary(L"xaudio2_9.dll");
+    if (!XAudio2Lib) {
+        OutputDebugString(L"Could not load XAudio2 library.\n");
+        return;
+    }
+    
+    // Get handle to the XAudio2Create function from XAudio2Lib
+    XAudio2CreateFn *XAudio2Create = (XAudio2CreateFn *)GetProcAddress(XAudio2Lib, "XAudio2Create");
+    if (!XAudio2Create) {
+        OutputDebugString(L"Could not get XAudio2Create.\n");
+        CoUninitialize();
+        return;
+    }
+
+    // Create the game XAudio2 object
+    // IXAudio2 *XAudio2;
+    if (FAILED(XAudio2Create(&GlobalAudioEngine.XAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR))) {
+        OutputDebugString(L"Could not create XAudio2.\n");
+        CoUninitialize();
+        return;
+    }
+    
+    // Create mastering voice
+    // IXAudio2MasteringVoice *MasteringVoice;
+    AUDIO_STREAM_CATEGORY AudioStreamCategory = AudioCategory_GameEffects;
+    if (FAILED(GlobalAudioEngine.XAudio2->CreateMasteringVoice(&GlobalAudioEngine.MasteringVoice, NumChannels, SamplesPerSec, 0, NULL, NULL, AudioStreamCategory))) {
+        OutputDebugString(L"Could not create mastering voice.\n");
+        CoUninitialize();
+        return;
+    }
+
+    // Populate Wave Format
+    // WAVEFORMATEX WaveFormat = {};
+    GlobalAudioEngine.WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
+    GlobalAudioEngine.WaveFormat.nChannels = NumChannels;
+    GlobalAudioEngine.WaveFormat.nSamplesPerSec = SamplesPerSec;
+    GlobalAudioEngine.WaveFormat.wBitsPerSample = 16;
+    GlobalAudioEngine.WaveFormat.nBlockAlign = (GlobalAudioEngine.WaveFormat.nChannels * GlobalAudioEngine.WaveFormat.wBitsPerSample) / 8;
+    GlobalAudioEngine.WaveFormat.cbSize = 0;
+    GlobalAudioEngine.WaveFormat.nAvgBytesPerSec = GlobalAudioEngine.WaveFormat.nSamplesPerSec * GlobalAudioEngine.WaveFormat.nBlockAlign;
+
+    return;
+}
+
+void W32_XAudio2CreateSource(IXAudio2SourceVoice **SourceVoice, WAVEFORMATEX *WaveFormat, void *AudioData, u32 AudioDataSize) {
+    // Create source voice
+    // TODO @null0routed: Should probably move this into a seperate function. Should I track these as part of the global struct?
+    if (FAILED(GlobalAudioEngine.XAudio2->CreateSourceVoice(SourceVoice, WaveFormat, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL))) {
+        OutputDebugString(L"Could not create source voice.\n");
+        CoUninitialize();
+        return;
+    }
+
+    XAUDIO2_BUFFER AudioBuffer = {};
+    AudioBuffer.Flags = 0;
+    AudioBuffer.AudioBytes = AudioDataSize; // Size of the buffer in bytes
+    AudioBuffer.LoopBegin = 0;
+    AudioBuffer.LoopLength = 0;
+    AudioBuffer.LoopCount = XAUDIO2_LOOP_INFINITE;
+    AudioBuffer.pAudioData = (BYTE *)AudioData; // Pointer to the audio data
+    AudioBuffer.pContext = NULL;
+    
+    return;
+}
+
+int W32_XAudioGenerateSquareWave(float freq, i16 amplitude, int duration) {
+    // Allocate a WaveFormat 
+    WAVEFORMATEX WaveFormat = {};
+    WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
+    WaveFormat.nChannels = 2;
+    WaveFormat.nSamplesPerSec = 48000;
+    WaveFormat.wBitsPerSample = 16;
+    WaveFormat.nBlockAlign = (WaveFormat.nChannels * WaveFormat.wBitsPerSample) / 8;
+    WaveFormat.cbSize = 0;
+    WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec * WaveFormat.nBlockAlign;
+
+    // Create a sound buffer
+    int BufferSize = WaveFormat.nSamplesPerSec * WaveFormat.nChannels * (WaveFormat.wBitsPerSample / 8) * duration;
+    BYTE *SoundBuffer = (BYTE *)VirtualAlloc(NULL, BufferSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!SoundBuffer) {
+        OutputDebugString(L"Could not allocate sound buffer.\n");
+        return -1;
+    }
+
+    // Main loop
+    int NumSamples = WaveFormat.nSamplesPerSec * duration;
+    int PeriodInSamples = WaveFormat.nSamplesPerSec / (int)freq;
+    i16 *CurrentWritePos = (i16 *)SoundBuffer;
+    for (int i = 0; i < NumSamples; ++i) {
+        // Generate a square wave with period of 1/freq
+        i16 ChannelSample = ((i % PeriodInSamples) <= (PeriodInSamples / 2)) ? amplitude : -amplitude;
+    
+        for (int j = 0; j < WaveFormat.nChannels; ++j) {
+            *CurrentWritePos++ = ChannelSample;
+        }
+    }
+
+    // Build the Source Voice
+    if (!GlobalAudioEngine.XAudio2) {
+        OutputDebugString(L"XAudio2 not initialized.\n");
+        CoUninitialize();
+        return -1;
+    }
+    IXAudio2SourceVoice *SourceVoice;
+    if (FAILED(GlobalAudioEngine.XAudio2->CreateSourceVoice(&SourceVoice, &WaveFormat, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL))) {
+        OutputDebugString(L"Could not create source voice.\n");
+        CoUninitialize();
+        return -1;
+    }
+
+    XAUDIO2_BUFFER AudioBuffer = {};
+    AudioBuffer.Flags = 0;
+    AudioBuffer.AudioBytes = sizeof(*SoundBuffer); // Size of the buffer in bytes
+    AudioBuffer.LoopBegin = 0;
+    AudioBuffer.LoopLength = NumSamples;
+    AudioBuffer.LoopCount = XAUDIO2_LOOP_INFINITE;
+    AudioBuffer.pAudioData = SoundBuffer; // Pointer to the audio data
+    AudioBuffer.pContext = NULL;
+    
+    // SubmitSourceVoice
+    if (FAILED(SourceVoice->SubmitSourceBuffer(&AudioBuffer))) {
+        OutputDebugString(L"Could not submit source buffer.\n");
+        CoUninitialize();
+        return -1;
+    }
+
+    // Play the sound
+    if (FAILED(SourceVoice->Start(0))) {
+        OutputDebugString(L"Could not start source voice.\n");
+        CoUninitialize();
+        return -1;
+    }
+
+    return 0;
+}
