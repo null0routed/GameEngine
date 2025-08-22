@@ -1,6 +1,7 @@
 #define UNICODE
 #define _UNICODE
 
+#include <stdio.h>
 #include <Windows.h>
 #include <Xinput.h>
 #include <dsound.h>
@@ -22,26 +23,39 @@ struct W32_WindowDimensions {
     i32 Height;
 };
 
+struct W32_AudioEngineInfo {
+    u32 TargetFrameRate;
+    u32 FrameSkip;
+    u32 BufferSafetyFactor;
+};
+
 struct W32_AudioEngine {
     IXAudio2 *XAudio2;
     IXAudio2MasteringVoice *MasteringVoice;
+    IXAudio2SourceVoice *SourceVoice;
     WAVEFORMATEX WaveFormat;
+    BYTE *SourceBuffer;
+    XAUDIO2_BUFFER AudioBuffer;
+    W32_AudioEngineInfo AudioEngineInfo;
 };
 
 // TODO @null0routed: Refactor this later
+// Application globals
 bool APP_RUNNING;
-static W32_OffscreenBuffer GlobalBackBuffer;
-static LPDIRECTSOUNDBUFFER GlobalSoundBuffer;
-static W32_AudioEngine GlobalAudioEngine;
+static W32_OffscreenBuffer GlobalBackBuffer;    // Graphics render buffer 
+static LPDIRECTSOUNDBUFFER GlobalSoundBuffer;   // DirectSound Buffer
+static W32_AudioEngine GlobalAudioEngine;       // XAudio2 Audio Engine
 
-LRESULT CALLBACK W32_WindowProc(HWND, UINT, WPARAM, LPARAM); // Application Window Procedure
-static void W32_ResizeDIBSection(W32_OffscreenBuffer *, i32, i32); // Initialize or resize Device Independant Bitmap
+// Application function definitions
+LRESULT CALLBACK W32_WindowProc(HWND, UINT, WPARAM, LPARAM);                    // Application Window Procedure
+static void W32_ResizeDIBSection(W32_OffscreenBuffer *, i32, i32);              // Initialize or resize Device Independant Bitmap
 static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *, HDC, i32, i32);
 static void W32_RenderGradient(W32_OffscreenBuffer *, i32, i32);
 static W32_WindowDimensions W32_GetWindowDimensions(HWND);
-static void W32_InitDSound(HWND, i32, i32);
-static void W32_InitXAudio2(u32, u32);
-int W32_XAudioGenerateSquareWave(float, i16, int); 
+static void W32_InitDSound(HWND, i32, i32);                                     // Initialize our DirectSound buffers
+static int W32_InitXAudio2(W32_AudioEngine *AudioEngine, u32 NumChannels, u32 SamplesPerSec, u32 TargetFrameRate, u32 FrameSkip, u32 BufferSafetyFactor); 
+static int W32_XAudioGenerateSquareWave(W32_AudioEngine *, float, i16, int);                       // Generate a square wave 
+static int W32_XAudioSubmitSourceBuffer(IXAudio2SourceVoice *, XAUDIO2_BUFFER *);
 
 /* NOTE @null0routed
 Probably should change this in the future to:
@@ -106,7 +120,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     
     // Load initial libraries 
     W32_LoadXInput();
-    W32_InitXAudio2(2, 48000);    
+    W32_InitXAudio2(&GlobalAudioEngine, 2, 48000, 120, 4, 2); // Channels = 2, Samples = 48khz, Tgt FPS = 120, Skip frames = 4, Safety Factor = 2
 
     // Generate main window and class
     LPCWSTR CLASS_NAME = L"GameEngine";
@@ -205,8 +219,13 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         W32_RenderGradient(&GlobalBackBuffer, XOffset, YOffset);
 
         // XAudio2 Sound Test
-        W32_XAudioGenerateSquareWave(440.0f, 3000.0f, 2);
-
+        static u32 AudioLoopCounter = 0;
+        if (++AudioLoopCounter >= (GlobalAudioEngine.AudioEngineInfo.FrameSkip * 2)) {
+            AudioLoopCounter = 0;
+            W32_XAudioGenerateSquareWave(&GlobalAudioEngine, 110.0f, 3000.0f, 2);
+            W32_XAudioSubmitSourceBuffer(GlobalAudioEngine.SourceVoice, &GlobalAudioEngine.AudioBuffer);
+        } 
+        
         // Sound output test
         DWORD PlayCursorPos;
         DWORD WriteCursorPos;
@@ -527,53 +546,103 @@ static void W32_InitDSound(HWND Window, i32 BufferSize, i32 SamplesPerSec) {
     return;
 }
 
-void W32_InitXAudio2(u32 NumChannels, u32 SamplesPerSec) {
+static int W32_InitXAudio2(W32_AudioEngine *AudioEngine, u32 NumChannels, u32 SamplesPerSec, u32 TargetFrameRate, u32 FrameSkip, u32 BufferSafetyFactor) {
     // Load the XAudio2 library
     HMODULE XAudio2Lib = LoadLibrary(L"xaudio2_9.dll");
     if (!XAudio2Lib) {
-        OutputDebugString(L"Could not load XAudio2 library.\n");
-        return;
+        OutputDebugString(L"Could not load XAudio2.9 library.\n");
+
+        // Fallback to XAudio2.8
+        XAudio2Lib = LoadLibrary(L"xaudio2_8.dll");
+        if (!XAudio2Lib) {
+            OutputDebugString(L"Could not load XAudio2.8 library.\n");
+            CoUninitialize();
+            return -1;
+        }
+
+        OutputDebugString(L"Using XAudio2.8\n");
     }
-    
+
     // Get handle to the XAudio2Create function from XAudio2Lib
     XAudio2CreateFn *XAudio2Create = (XAudio2CreateFn *)GetProcAddress(XAudio2Lib, "XAudio2Create");
     if (!XAudio2Create) {
         OutputDebugString(L"Could not get XAudio2Create.\n");
         CoUninitialize();
-        return;
+        return -1;
     }
 
+    // Check AudioEngine for nullptr
+    if (!AudioEngine) {
+        OutputDebugString(L"Audio engine not initialized.\n");
+        CoUninitialize();
+        return -1;
+    } 
+    
     // Create the game XAudio2 object
     // IXAudio2 *XAudio2;
-    if (FAILED(XAudio2Create(&GlobalAudioEngine.XAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR))) {
+    if (FAILED(XAudio2Create(&AudioEngine->XAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR))) {
         OutputDebugString(L"Could not create XAudio2.\n");
         CoUninitialize();
-        return;
+        return -1;
     }
     
     // Create mastering voice
     // IXAudio2MasteringVoice *MasteringVoice;
     AUDIO_STREAM_CATEGORY AudioStreamCategory = AudioCategory_GameEffects;
-    if (FAILED(GlobalAudioEngine.XAudio2->CreateMasteringVoice(&GlobalAudioEngine.MasteringVoice, NumChannels, SamplesPerSec, 0, NULL, NULL, AudioStreamCategory))) {
+    if (FAILED(AudioEngine->XAudio2->CreateMasteringVoice(&AudioEngine->MasteringVoice, NumChannels, SamplesPerSec, 0, NULL, NULL, AudioStreamCategory))) {
         OutputDebugString(L"Could not create mastering voice.\n");
         CoUninitialize();
-        return;
+        return -1;
     }
+
+    // Populate AudioEngineInfo struct
+    AudioEngine->AudioEngineInfo = {};
+    AudioEngine->AudioEngineInfo.TargetFrameRate = TargetFrameRate;
+    AudioEngine->AudioEngineInfo.FrameSkip = FrameSkip;
+    AudioEngine->AudioEngineInfo.BufferSafetyFactor = BufferSafetyFactor;
 
     // Populate Wave Format
     // WAVEFORMATEX WaveFormat = {};
-    GlobalAudioEngine.WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
-    GlobalAudioEngine.WaveFormat.nChannels = NumChannels;
-    GlobalAudioEngine.WaveFormat.nSamplesPerSec = SamplesPerSec;
-    GlobalAudioEngine.WaveFormat.wBitsPerSample = 16;
-    GlobalAudioEngine.WaveFormat.nBlockAlign = (GlobalAudioEngine.WaveFormat.nChannels * GlobalAudioEngine.WaveFormat.wBitsPerSample) / 8;
-    GlobalAudioEngine.WaveFormat.cbSize = 0;
-    GlobalAudioEngine.WaveFormat.nAvgBytesPerSec = GlobalAudioEngine.WaveFormat.nSamplesPerSec * GlobalAudioEngine.WaveFormat.nBlockAlign;
+    AudioEngine->WaveFormat = {};
+    AudioEngine->WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
+    AudioEngine->WaveFormat.nChannels = NumChannels;
+    AudioEngine->WaveFormat.nSamplesPerSec = SamplesPerSec;
+    AudioEngine->WaveFormat.wBitsPerSample = 16;
+    AudioEngine->WaveFormat.nBlockAlign = (AudioEngine->WaveFormat.nChannels * AudioEngine->WaveFormat.wBitsPerSample) / 8;
+    AudioEngine->WaveFormat.cbSize = 0;
+    AudioEngine->WaveFormat.nAvgBytesPerSec = AudioEngine->WaveFormat.nSamplesPerSec * AudioEngine->WaveFormat.nBlockAlign;
 
-    return;
+    // Create a source voice
+    // IXAudio2SourceVoice *SourceVoice;
+    if (FAILED(AudioEngine->XAudio2->CreateSourceVoice(&AudioEngine->SourceVoice, &AudioEngine->WaveFormat, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL))) {
+        OutputDebugString(L"Could not create source voice.\n");
+        CoUninitialize();
+        return -1;
+    }
+
+    // Buffer pre-allocation
+    u32 SamplesPerFrame = SamplesPerSec / TargetFrameRate;
+    int BufferSize = SamplesPerFrame * FrameSkip * AudioEngine->AudioEngineInfo.BufferSafetyFactor * AudioEngine->WaveFormat.nChannels * (AudioEngine->WaveFormat.wBitsPerSample / 8);
+    // int _BufferSize = AudioEngine->WaveFormat.nSamplesPerSec * AudioEngine->WaveFormat.nChannels * (AudioEngine->WaveFormat.wBitsPerSample / 8) * duration;
+    AudioEngine->SourceBuffer = (BYTE *)VirtualAlloc(NULL, BufferSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!AudioEngine->SourceBuffer) {
+        OutputDebugString(L"Could not allocate sound buffer.\n");
+        return -1;
+    }
+
+    AudioEngine->AudioBuffer = {};
+    AudioEngine->AudioBuffer.Flags = 0;
+    AudioEngine->AudioBuffer.AudioBytes = BufferSize; // Size of the buffer in bytes
+    AudioEngine->AudioBuffer.LoopBegin = 0;
+    AudioEngine->AudioBuffer.LoopLength = (SamplesPerFrame * FrameSkip); // Loop = # samples we play x # frames to skip loading reducing CPU load
+    AudioEngine->AudioBuffer.LoopCount = XAUDIO2_LOOP_INFINITE;
+    AudioEngine->AudioBuffer.pAudioData = AudioEngine->SourceBuffer; // Pointer to the audio data
+    AudioEngine->AudioBuffer.pContext = NULL;     
+
+    return 0;
 }
 
-void W32_XAudio2CreateSource(IXAudio2SourceVoice **SourceVoice, WAVEFORMATEX *WaveFormat, void *AudioData, u32 AudioDataSize) {
+static void W32_XAudio2CreateSource(IXAudio2SourceVoice **SourceVoice, WAVEFORMATEX *WaveFormat, void *AudioData, u32 AudioDataSize) {
     // Create source voice
     // TODO @null0routed: Should probably move this into a seperate function. Should I track these as part of the global struct?
     if (FAILED(GlobalAudioEngine.XAudio2->CreateSourceVoice(SourceVoice, WaveFormat, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL))) {
@@ -594,62 +663,59 @@ void W32_XAudio2CreateSource(IXAudio2SourceVoice **SourceVoice, WAVEFORMATEX *Wa
     return;
 }
 
-int W32_XAudioGenerateSquareWave(float freq, i16 amplitude, int duration) {
-    // Allocate a WaveFormat 
-    WAVEFORMATEX WaveFormat = {};
-    WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
-    WaveFormat.nChannels = 2;
-    WaveFormat.nSamplesPerSec = 48000;
-    WaveFormat.wBitsPerSample = 16;
-    WaveFormat.nBlockAlign = (WaveFormat.nChannels * WaveFormat.wBitsPerSample) / 8;
-    WaveFormat.cbSize = 0;
-    WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec * WaveFormat.nBlockAlign;
+static int W32_XAudioGenerateSquareWave(W32_AudioEngine *AudioEng, float freq, i16 amplitude, int duration) {
 
-    // Create a sound buffer
-    int BufferSize = WaveFormat.nSamplesPerSec * WaveFormat.nChannels * (WaveFormat.wBitsPerSample / 8) * duration;
-    BYTE *SoundBuffer = (BYTE *)VirtualAlloc(NULL, BufferSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!SoundBuffer) {
-        OutputDebugString(L"Could not allocate sound buffer.\n");
+    if (!AudioEng) {
+        OutputDebugString(L"Audio engine not initialized.\n");
+        CoUninitialize();
+        return -1;
+    }
+
+    u32 SamplesPerFrame = AudioEng->WaveFormat.nSamplesPerSec / AudioEng->AudioEngineInfo.TargetFrameRate;
+    int BufferSize = SamplesPerFrame * AudioEng->AudioEngineInfo.FrameSkip * AudioEng->AudioEngineInfo.BufferSafetyFactor * AudioEng->WaveFormat.nChannels * (AudioEng->WaveFormat.wBitsPerSample / 8);
+
+    // Ensure BufferSize doesn't exceed the buffer capacity
+    if (BufferSize > AudioEng->AudioBuffer.AudioBytes) {
+        OutputDebugString(L"Error: Calculated BufferSize exceeds SourceBufferCapacity.\n");
+        return -1; // Or handle this error appropriately
+    }
+
+    // Verify SourceBuffer is properly aligned for 16-bit writes.  This is critical!
+    if ((uintptr_t)AudioEng->SourceBuffer % sizeof(i16) != 0) {
+        OutputDebugString(L"Error: SourceBuffer not properly aligned for i16 writes.\n");
         return -1;
     }
 
     // Main loop
-    int NumSamples = WaveFormat.nSamplesPerSec * duration;
-    int PeriodInSamples = WaveFormat.nSamplesPerSec / (int)freq;
-    i16 *CurrentWritePos = (i16 *)SoundBuffer;
+    // int NumSamples = AudioEng->WaveFormat.nSamplesPerSec * duration;
+    int NumSamples = BufferSize / (AudioEng->WaveFormat.nChannels * sizeof(i16));
+    int PeriodInSamples = AudioEng->WaveFormat.nSamplesPerSec / (int)freq;
+    i16 *CurrentWritePos = (i16 *)AudioEng->SourceBuffer;
     for (int i = 0; i < NumSamples; ++i) {
         // Generate a square wave with period of 1/freq
         i16 ChannelSample = ((i % PeriodInSamples) <= (PeriodInSamples / 2)) ? amplitude : -amplitude;
-    
-        for (int j = 0; j < WaveFormat.nChannels; ++j) {
             *CurrentWritePos++ = ChannelSample;
-        }
+            *CurrentWritePos++ = ChannelSample;
     }
-
-    // Build the Source Voice
-    if (!GlobalAudioEngine.XAudio2) {
-        OutputDebugString(L"XAudio2 not initialized.\n");
-        CoUninitialize();
-        return -1;
-    }
-    IXAudio2SourceVoice *SourceVoice;
-    if (FAILED(GlobalAudioEngine.XAudio2->CreateSourceVoice(&SourceVoice, &WaveFormat, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL))) {
-        OutputDebugString(L"Could not create source voice.\n");
-        CoUninitialize();
-        return -1;
-    }
-
-    XAUDIO2_BUFFER AudioBuffer = {};
-    AudioBuffer.Flags = 0;
-    AudioBuffer.AudioBytes = sizeof(*SoundBuffer); // Size of the buffer in bytes
-    AudioBuffer.LoopBegin = 0;
-    AudioBuffer.LoopLength = NumSamples;
-    AudioBuffer.LoopCount = XAUDIO2_LOOP_INFINITE;
-    AudioBuffer.pAudioData = SoundBuffer; // Pointer to the audio data
-    AudioBuffer.pContext = NULL;
+}
     
-    // SubmitSourceVoice
-    if (FAILED(SourceVoice->SubmitSourceBuffer(&AudioBuffer))) {
+static int W32_XAudioSubmitSourceBuffer(IXAudio2SourceVoice *SourceVoice, XAUDIO2_BUFFER *AudioBuffer) {
+    // SourceVoice nullptr check
+    if (!SourceVoice) {
+        OutputDebugString(L"Source voice not initialized.\n");
+        CoUninitialize();
+        return -1;
+    }
+
+    // AudioBuffer nullptr check
+    if (!AudioBuffer) {
+        OutputDebugString(L"Audio buffer not initialized.\n");
+        CoUninitialize();
+        return -1;
+    }
+
+    // Submit Source Voice
+    if (FAILED(SourceVoice->SubmitSourceBuffer(AudioBuffer, NULL))) {
         OutputDebugString(L"Could not submit source buffer.\n");
         CoUninitialize();
         return -1;
