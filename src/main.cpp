@@ -38,6 +38,19 @@ struct W32_AudioEngineInfo {
     u32 BufferSafetyFactor;
 };
 
+struct W32_SoundOutput {
+    // i32 SquareWavePeriod = 48000/256;
+    i32 SamplesPerSec;
+    i32 BytesPerSample;
+    i32 BufferSize;
+    u32 RunningSampleIdx;
+    i32 Frequency;
+    i32 WavePeriod;
+    i16 Amplitude;
+    i16 Latency;
+};
+
+
 struct W32_AudioEngine {
     IXAudio2 *XAudio2;
     IXAudio2MasteringVoice *MasteringVoice;
@@ -62,6 +75,7 @@ static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *, HDC, i32, i32);
 static void W32_RenderGradient(W32_OffscreenBuffer *, i32, i32);
 static W32_WindowDimensions W32_GetWindowDimensions(HWND);
 static void W32_InitDSound(HWND, i32, i32);                                                 // Initialize our DirectSound buffers
+static void W32_DSoundGenerateSineWave(W32_SoundOutput *, DWORD, DWORD);                    // Generate a sine wave
 static int W32_InitXAudio2(W32_AudioEngine *AudioEngine, u32 NumChannels, u32 SamplesPerSec, u32 TargetFrameRate, u32 FrameSkip, u32 BufferSafetyFactor); 
 static int W32_XAudioGenerateSquareWave(W32_AudioEngine *, float, i16);                     // Generate a square wave 
 static int W32_XAudioGenerateSineWave(W32_AudioEngine *, float, i16);                       // Generate a sine wave 
@@ -129,14 +143,15 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     }
 
     // Init vars
-    static bool SoundPlaying = false;
     u32 PeriodInSamples = 48000 / 440;
     static bool XAudioOnce = false;
 
     // Load initial libraries 
     W32_LoadXInput();
     W32_InitXAudio2(&GlobalAudioEngine, 2, 48000, 120, PeriodInSamples, 2); // Channels = 2, Samples = 48khz, Tgt FPS = 120, Skip frames = freq, Safety Factor = 2
-
+    W32_XAudioGenerateSineWave(&GlobalAudioEngine, 440.0f, 7000);
+    // W32_XAudioSubmitSourceBuffer(GlobalAudioEngine.SourceVoice, &GlobalAudioEngine.AudioBuffer);
+    
     // Generate main window and class
     LPCWSTR CLASS_NAME = L"GameEngine";
     WNDCLASSEXW WindowClass = {};
@@ -175,17 +190,23 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     i32 XOffset = 0;
     i32 YOffset = 0;
     
-    // Sound vars
-    i32 SquareWavePeriod = 48000/256;
-    i32 BytesPerSample = sizeof(i16) * 2;
-    i32 BufferSize = 48000 * BytesPerSample;
-    u32 RunningSampleIdx = 0;
-
     // Application vars
     APP_RUNNING = true;
 
     // Initialize DirectSound
-    W32_InitDSound(Window, 48000*sizeof(i16)*2, 48000);
+    W32_SoundOutput SoundOutput = {};
+    SoundOutput.SamplesPerSec = 48000;
+    SoundOutput.BytesPerSample = sizeof(i16) * 2;
+    SoundOutput.BufferSize = SoundOutput.SamplesPerSec * SoundOutput.BytesPerSample;
+    SoundOutput.RunningSampleIdx = 0;
+    SoundOutput.Frequency = 440;
+    SoundOutput.Amplitude = 8000;
+    SoundOutput.WavePeriod = SoundOutput.SamplesPerSec / SoundOutput.Frequency;
+    SoundOutput.Latency = 15;
+
+    W32_InitDSound(Window, SoundOutput.BufferSize, SoundOutput.SamplesPerSec);
+    W32_DSoundGenerateSineWave(&SoundOutput, 0, SoundOutput.BufferSize);
+    GlobalSoundBuffer->Play(0, 0, DSBPLAY_LOOPING);
 
     HDC DeviceCtx = GetDC(Window); // Get DC here because we created window class with "own dc"
     MSG Message; // Declared here to reduce allocations during message loop
@@ -204,7 +225,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         for (DWORD CtrlrIndex = 0; CtrlrIndex < XUSER_MAX_COUNT; ++CtrlrIndex) {
             XINPUT_STATE ControllerState;
             if (XInputGetState(CtrlrIndex, &ControllerState) != ERROR_SUCCESS) {
-                OutputDebugString(L"Could not get controller state\n");
+                // OutputDebugString(L"Could not get controller state\n");
                 continue;
             }
        
@@ -238,69 +259,28 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         //    AudioLoopCounter = 0;
             // W32_XAudioGenerateSquareWave(&GlobalAudioEngine, 110.0f, 3000);
         
-        if (!XAudioOnce) {
-            XAudioOnce = true;
-            W32_XAudioGenerateSineWave(&GlobalAudioEngine, 440.0f, 5000);
-            W32_XAudioSubmitSourceBuffer(GlobalAudioEngine.SourceVoice, &GlobalAudioEngine.AudioBuffer);
-        }
         // } while (++AudioLoopCounter >= (PeriodInSamples));
        
         // Sound output test
         DWORD PlayCursorPos;
         DWORD WriteCursorPos;
-        if (!SoundPlaying && SUCCEEDED(GlobalSoundBuffer->GetCurrentPosition(&PlayCursorPos, &WriteCursorPos))) {
+        if (SUCCEEDED(GlobalSoundBuffer->GetCurrentPosition(&PlayCursorPos, &WriteCursorPos))) {
 
-            i32 WavePeriod = GlobalAudioEngine.WaveFormat.nSamplesPerSec / 440;
-            
-            void *Region1, *Region2;
-            DWORD Region1Size, Region2Size;
+            DWORD TargetCursor = PlayCursorPos + (SoundOutput.Latency * SoundOutput.BytesPerSample);
             DWORD BytesToWrite = 0;
-
-            DWORD ByteToLock = RunningSampleIdx * BytesPerSample % BufferSize;
-            if (ByteToLock > PlayCursorPos) {
-                BytesToWrite = BufferSize - ByteToLock;
-                BytesToWrite += PlayCursorPos;
+            DWORD ByteToLock = (SoundOutput.RunningSampleIdx * SoundOutput.BytesPerSample) % SoundOutput.BufferSize;
+            if (ByteToLock > TargetCursor) {
+                BytesToWrite = SoundOutput.BufferSize - ByteToLock;
+                BytesToWrite += TargetCursor;
             } else {
-                BytesToWrite = PlayCursorPos - ByteToLock;
+                BytesToWrite = TargetCursor - ByteToLock;
             }
-
-            if(SUCCEEDED(GlobalSoundBuffer->Lock(ByteToLock, BytesToWrite, &Region1, &Region1Size, &Region2, &Region2Size, NULL))) {
-                // TODO @null0routed: Assert region 1 / region 2 sizes are valid
-                i32 *SampleOut = (i32 *)Region1;
-                DWORD Region1SampleCount = Region1Size / BytesPerSample;
-                for (DWORD idx = 0; idx < Region1SampleCount; ++idx) {
-                    /*
-                    i32 SquareWaveOutput = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
-                    *SampleOut++ = (SquareWaveOutput << (sizeof(i16)*8)) & SquareWaveOutput;
-                    */
-                    r32 t = 2.0f * M_PI * RunningSampleIdx / (r32)WavePeriod;
-                    r32 SineValue = sinf(t);
-                    i16 SampleValue = (i16)(SineValue * 4000);
-                    *SampleOut++ = (SampleValue<< (sizeof(i16)*8)) & SampleValue;
-                    RunningSampleIdx++;
-                }
-                
-                DWORD Region2SampleCount = Region2Size / BytesPerSample;
-                SampleOut = (i32 *)Region2;
-                for (DWORD idx = 0; idx < (Region2Size/sizeof(i32)); ++idx) {
-                    /*
-                    i32 SquareWaveOutputR2 = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
-                    *SampleOutR2++ = (SquareWaveOutputR2 << (sizeof(i16)*8)) & SquareWaveOutputR2;
-                    */
-                    r32 t = 2.0f * M_PI * RunningSampleIdx / (r32)WavePeriod;
-                    r32 SineValue = sinf(t);
-                    i16 SampleValue = (i16)(SineValue * 4000);
-                    *SampleOut++ = (SampleValue<< (sizeof(i16)*8)) & SampleValue;
-                }
-                
-                GlobalSoundBuffer->Unlock(Region1, Region1Size, Region2, Region2Size);
-                
-                GlobalSoundBuffer->Play(0, 0, DSBPLAY_LOOPING);
-                SoundPlaying = true;
-            }    
             
-            OutputDebugString(L"Could not lock buffer\n");
-            printf("Last error: %d\n", GetLastError());
+            // Do more stuff here
+            if (BytesToWrite > 0) {
+                OutputDebugString(L"Generating soundwave\n");
+                W32_DSoundGenerateSineWave(&SoundOutput, ByteToLock, BytesToWrite);
+            }
         }    
         
         W32_WindowDimensions Dimensions = W32_GetWindowDimensions(Window);
@@ -584,6 +564,49 @@ static void W32_InitDSound(HWND Window, i32 BufferSize, i32 SamplesPerSec) {
     return;
 }
 
+static void W32_DSoundGenerateSineWave(W32_SoundOutput *SoundOutput, DWORD ByteToLock, DWORD BytesToWrite) {
+
+    void *Region1, *Region2;
+    DWORD Region1Size, Region2Size;
+
+    if(FAILED(GlobalSoundBuffer->Lock(ByteToLock, BytesToWrite, &Region1, &Region1Size, &Region2, &Region2Size, NULL))) {
+        OutputDebugString(L"Could not lock buffer\n");
+        printf("Last error: %d\n", GetLastError());
+        return;
+    }
+    
+    // TODO @null0routed: Assert region 1 / region 2 sizes are valid
+    i32 *SampleOut = (i32 *)Region1;
+    DWORD Region1SampleCount = Region1Size / SoundOutput->BytesPerSample;
+    for (DWORD idx = 0; idx < Region1SampleCount; ++idx) {
+        /*
+        i32 SquareWaveOutput = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
+        *SampleOut++ = (SquareWaveOutput << (sizeof(i16)*8)) & SquareWaveOutput;
+        */
+        r32 t = 2.0f * M_PI * (r32)SoundOutput->RunningSampleIdx / (r32)SoundOutput->WavePeriod;
+        r32 SineValue = sinf(t);
+        i16 SampleValue = (i16)(SineValue * SoundOutput->Amplitude);
+        *SampleOut++ = (SampleValue << 16) & SampleValue;
+        ++SoundOutput->RunningSampleIdx;
+    }
+    
+    DWORD Region2SampleCount = Region2Size / SoundOutput->BytesPerSample;
+    SampleOut = (i32 *)Region2;
+    for (DWORD idx = 0; idx < (Region2SampleCount); ++idx) {
+        /*
+        i32 SquareWaveOutputR2 = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
+        *SampleOutR2++ = (SquareWaveOutputR2 << (sizeof(i16)*8)) & SquareWaveOutputR2;
+        */
+        r32 t = 2.0f * M_PI * (r32)SoundOutput->RunningSampleIdx / (r32)SoundOutput->WavePeriod;
+        r32 SineValue = sinf(t);
+        i16 SampleValue = (i16)(SineValue * SoundOutput->Amplitude);
+        *SampleOut++ = (SampleValue << 16) & SampleValue;
+        ++SoundOutput->RunningSampleIdx;
+    }
+    
+    GlobalSoundBuffer->Unlock(Region1, Region1Size, Region2, Region2Size);
+}
+
 static int W32_InitXAudio2(W32_AudioEngine *AudioEngine, u32 NumChannels, u32 SamplesPerSec, u32 TargetFrameRate, u32 FrameSkip, u32 BufferSafetyFactor) {
     // Load the XAudio2 library
     HMODULE XAudio2Lib = LoadLibrary(L"xaudio2_9.dll");
@@ -749,7 +772,7 @@ static int W32_XAudioGenerateSineWave(W32_AudioEngine *AudioEng, float freq, i16
 
     u32 SamplesPerFrame = AudioEng->WaveFormat.nSamplesPerSec / AudioEng->AudioEngineInfo.TargetFrameRate;
     u32 BufferSize = SamplesPerFrame * AudioEng->AudioEngineInfo.FrameSkip * AudioEng->AudioEngineInfo.BufferSafetyFactor * AudioEng->WaveFormat.nChannels * (AudioEng->WaveFormat.wBitsPerSample / 8);
-    AudioEng->AudioBuffer.LoopLength = AudioEng->WaveFormat.nSamplesPerSec / freq; // This should be the samples per period of the sine wave
+    AudioEng->AudioBuffer.LoopLength = AudioEng->WaveFormat.nSamplesPerSec / (int)freq; // This should be the samples per period of the sine wave
 
     // Ensure BufferSize doesn't exceed the buffer capacity
     if (BufferSize > AudioEng->AudioBuffer.AudioBytes) {

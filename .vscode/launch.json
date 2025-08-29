@@ -21,6 +21,14 @@
             "visualizerFile": "${workspaceFolder}/.vscode/natvis/custom.natvis"
         },
         {
+            "name": "RAD Debug",
+            "type": "raddebugger",
+            "request": "launch",
+            "program": "",
+            "preLaunchTask": "Build Debug",
+            "internalConsoleOptions": "openOnSessionStart",
+        },
+        {
             "name": "Debug (No Build)",
             "type": "cppvsdbg",
             "request": "launch",

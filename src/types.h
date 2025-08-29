@@ -17,4 +17,4 @@ typedef float r32;
 typedef double r64;
 
 // Maths
-const float M_PI = 3.14159265358979323;
+const float M_PI = 3.14159265358979323f;
