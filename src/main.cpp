@@ -192,6 +192,9 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     
     // Application vars
     APP_RUNNING = true;
+    LARGE_INTEGER perf_counter_freq;
+    QueryPerformanceFrequency(&perf_counter_freq);
+    i64 PerfCounterFreq = perf_counter_freq.QuadPart;
 
     // Initialize DirectSound
     W32_SoundOutput SoundOutput = {};
@@ -202,16 +205,20 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     SoundOutput.Frequency = 440;
     SoundOutput.Amplitude = 8000;
     SoundOutput.WavePeriod = SoundOutput.SamplesPerSec / SoundOutput.Frequency;
-    SoundOutput.Latency = 15;
+    SoundOutput.Latency = SoundOutput.SamplesPerSec / 120;
 
     W32_InitDSound(Window, SoundOutput.BufferSize, SoundOutput.SamplesPerSec);
-    W32_DSoundGenerateSineWave(&SoundOutput, 0, SoundOutput.BufferSize);
+    W32_DSoundGenerateSineWave(&SoundOutput, 0, SoundOutput.Latency * SoundOutput.BytesPerSample);
     GlobalSoundBuffer->Play(0, 0, DSBPLAY_LOOPING);
 
     HDC DeviceCtx = GetDC(Window); // Get DC here because we created window class with "own dc"
     MSG Message; // Declared here to reduce allocations during message loop
     
+    LARGE_INTEGER PerfCounter;
+    QueryPerformanceCounter(&PerfCounter);
+
     while(APP_RUNNING) {
+        
         while (PeekMessage(&Message, Window, 0, 0, PM_REMOVE)) {
             if (Message.message == WM_QUIT) {
                 APP_RUNNING = false;
@@ -241,9 +248,13 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
             bool BButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_B); 
             bool XButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_X); 
             bool YButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_Y); 
-            
+
             i16 StickX = ControllerState.Gamepad.sThumbLX;
             i16 StickY = ControllerState.Gamepad.sThumbLY;
+
+            // TODO @null0routed: Need to develop proper deadzone handling
+            XOffset += StickX / 4096;
+            YOffset += StickY / 4096;
         }
 
         XINPUT_VIBRATION Vibration;
@@ -266,7 +277,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         DWORD WriteCursorPos;
         if (SUCCEEDED(GlobalSoundBuffer->GetCurrentPosition(&PlayCursorPos, &WriteCursorPos))) {
 
-            DWORD TargetCursor = PlayCursorPos + (SoundOutput.Latency * SoundOutput.BytesPerSample);
+            DWORD TargetCursor = (PlayCursorPos + (SoundOutput.Latency * SoundOutput.BytesPerSample)) % SoundOutput.BufferSize;
             DWORD BytesToWrite = 0;
             DWORD ByteToLock = (SoundOutput.RunningSampleIdx * SoundOutput.BytesPerSample) % SoundOutput.BufferSize;
             if (ByteToLock > TargetCursor) {
@@ -278,7 +289,6 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
             
             // Do more stuff here
             if (BytesToWrite > 0) {
-                OutputDebugString(L"Generating soundwave\n");
                 W32_DSoundGenerateSineWave(&SoundOutput, ByteToLock, BytesToWrite);
             }
         }    
@@ -288,6 +298,20 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         
         ++XOffset;
         ++YOffset;
+
+        LARGE_INTEGER PerfCounterEnd;
+        QueryPerformanceCounter(&PerfCounterEnd);
+
+        // TODO @null0routed: Display counter info
+        u64 CounterElapsed = PerfCounterEnd.QuadPart - PerfCounter.QuadPart;
+        u32 MSPerFrame = (i32)(1000 * CounterElapsed) / PerfCounterFreq;
+        u32 FPS = PerfCounterFreq / (i32)CounterElapsed;
+        
+        wchar_t strBuffer[256];
+        wsprintf(strBuffer, L"ms per frame: %d FPS: %d\n", MSPerFrame);
+        OutputDebugString(strBuffer);
+
+        PerfCounter = PerfCounterEnd;
     }  
 
     ReleaseDC(Window, DeviceCtx);
