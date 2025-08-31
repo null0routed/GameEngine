@@ -49,15 +49,15 @@ rule mkdir
 # Build targets
 build $builddir: mkdir
 
-build $builddir/main.obj: cc src/main.cpp | $builddir
-build $builddir/main.exe: link $builddir/main.obj
+build $builddir/win32_main.obj: cc src/win32_main.cpp | $builddir
+build $builddir/win32_main.exe: link $builddir/win32_main.obj
 
 # Release builds
-build $builddir/main_release.obj: cc_release src/main.cpp | $builddir
+build $builddir/main_release.obj: cc_release src/win32_main.cpp | $builddir
 build $builddir/main_release.exe: link_release $builddir/main_release.obj
 
 # Clean target
 build clean: clean
 
 # Default target
-default $builddir/main.exe
+default $builddir/win32_main.exe

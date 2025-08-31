@@ -14,9 +14,13 @@ Licensed under the MIT license
 #include <combaseapi.h>
 #include <xaudio2.h>
 #include "types.h"
+#include "platforms.h"
 
 // For testing
 #include <math.h>
+
+// Include platform code
+#include "platforms.cpp"
 
 struct W32_OffscreenBuffer {
     BITMAPINFO BitmapInfo = {};
@@ -72,7 +76,6 @@ static W32_AudioEngine GlobalAudioEngine;       // XAudio2 Audio Engine
 LRESULT CALLBACK W32_WindowProc(HWND, UINT, WPARAM, LPARAM);                                // Application Window Procedure
 static void W32_ResizeDIBSection(W32_OffscreenBuffer *, i32, i32);                          // Initialize or resize Device Independant Bitmap
 static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *, HDC, i32, i32);
-static void W32_RenderGradient(W32_OffscreenBuffer *, i32, i32);
 static W32_WindowDimensions W32_GetWindowDimensions(HWND);
 static void W32_InitDSound(HWND, i32, i32);                                                 // Initialize our DirectSound buffers
 static void W32_DSoundGenerateSineWave(W32_SoundOutput *, DWORD, DWORD);                    // Generate a sine wave
@@ -262,8 +265,6 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         Vibration.wRightMotorSpeed = 60000;
         XInputSetState(0, &Vibration);
 
-        W32_RenderGradient(&GlobalBackBuffer, XOffset, YOffset);
-
         // XAudio2 Sound Test
         // static u32 AudioLoopCounter = 0;
         // do { 
@@ -271,7 +272,14 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
             // W32_XAudioGenerateSquareWave(&GlobalAudioEngine, 110.0f, 3000);
         
         // } while (++AudioLoopCounter >= (PeriodInSamples));
-       
+        
+        GameOffscreenBuffer Buffer = {};
+        Buffer.Memory = GlobalBackBuffer.BitmapMemory;
+        Buffer.Width = GlobalBackBuffer.BitmapWidth;
+        Buffer.Height = GlobalBackBuffer.BitmapHeight;
+        Buffer.Pitch = GlobalBackBuffer.Pitch;
+        RAGE_GameUpdateAndRender(&Buffer, XOffset, YOffset);
+
         // Sound output test
         DWORD PlayCursorPos;
         DWORD WriteCursorPos;
@@ -493,22 +501,6 @@ static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *Buffer, HDC DeviceCtx
     );
 }
 
-static void W32_RenderGradient(W32_OffscreenBuffer *Buffer, i32 XOffset, i32 YOffset) {
-    u8 *Row = (u8 *)Buffer->BitmapMemory;
-
-    for (i32 Y = 0; Y < Buffer->BitmapHeight; ++Y) {
-        u32 *Pixel = (u32 *)Row;
-        for (i32 X = 0; X < Buffer->BitmapWidth; ++X) {
-            u8 Blue = (X + XOffset);
-            u8 Green = (Y + YOffset);
-            *Pixel++ = (Green << 8) | Blue;
-        }
-
-        // Can do less allocation with:
-        // Row = (u8 *)Pixel;
-        Row += Buffer->Pitch;
-    }
-}
 
 static W32_WindowDimensions W32_GetWindowDimensions(HWND window) {
     W32_WindowDimensions Dimensions;
