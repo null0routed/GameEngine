@@ -1,3 +1,9 @@
+/*
+Copyright (C) 2025 "GameEngine" null0routed
+
+Licensed under the MIT license
+*/
+
 #pragma once
 
 #include <stdint.h>

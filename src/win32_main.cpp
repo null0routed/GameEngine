@@ -7,6 +7,8 @@ Licensed under the MIT license
 #define UNICODE
 #define _UNICODE
 
+#define TARGET_FRAMERATE 120
+
 #include <stdio.h>
 #include <Windows.h>
 #include <Xinput.h>
@@ -48,9 +50,7 @@ struct W32_SoundOutput {
     i32 BytesPerSample;
     i32 BufferSize;
     u32 RunningSampleIdx;
-    i32 Frequency;
-    i32 WavePeriod;
-    i16 Amplitude;
+    //i32 WavePeriod;
     i16 Latency;
 };
 
@@ -78,13 +78,16 @@ static void W32_ResizeDIBSection(W32_OffscreenBuffer *, i32, i32);              
 static void W32_DisplayBufferInWindow(W32_OffscreenBuffer *, HDC, i32, i32);
 static W32_WindowDimensions W32_GetWindowDimensions(HWND);
 static void W32_InitDSound(HWND, i32, i32);                                                 // Initialize our DirectSound buffers
-static void W32_DSoundGenerateSineWave(W32_SoundOutput *, DWORD, DWORD);                    // Generate a sine wave
-static int W32_InitXAudio2(W32_AudioEngine *AudioEngine, u32 NumChannels, u32 SamplesPerSec, u32 TargetFrameRate, u32 FrameSkip, u32 BufferSafetyFactor); 
+static void W32_DSoundFillSoundBuffer(W32_SoundOutput *, RAGE_GameSoundBuffer *, DWORD, DWORD);  // Generate a sine wave
+static void W32_DSoundClearBuffer(W32_SoundOutput *);                    
+static int W32_InitXAudio2(W32_AudioEngine *AudioEngine, u32 NumChannels, u32 SamplesPerSec,
+    u32 TargetFrameRate, u32 FrameSkip, u32 BufferSafetyFactor); 
 static int W32_XAudioGenerateSquareWave(W32_AudioEngine *, float, i16);                     // Generate a square wave 
 static int W32_XAudioGenerateSineWave(W32_AudioEngine *, float, i16);                       // Generate a sine wave 
 static int W32_XAudioSubmitSourceBuffer(IXAudio2SourceVoice *, XAUDIO2_BUFFER *);
-
-/* NOTE @null0routed
+static void W32_ProcessDigitalButton(RAGE_GameButtonState *OldState, RAGE_GameButtonState *NewState,
+    DWORD ButtonState, DWORD ButtonBit);
+    /* NOTE @null0routed
 Probably should change this in the future to:
 # define XInputGetState _XInputGetState
 typedef DWORD (WINAPI W32_XInputGetState_t *)(DWORD, XINPUT_STATE*)
@@ -205,18 +208,22 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
     SoundOutput.BytesPerSample = sizeof(i16) * 2;
     SoundOutput.BufferSize = SoundOutput.SamplesPerSec * SoundOutput.BytesPerSample;
     SoundOutput.RunningSampleIdx = 0;
-    SoundOutput.Frequency = 440;
-    SoundOutput.Amplitude = 8000;
-    SoundOutput.WavePeriod = SoundOutput.SamplesPerSec / SoundOutput.Frequency;
+    //SoundOutput.WavePeriod = SoundOutput.SamplesPerSec / SoundOutput.Frequency;
     SoundOutput.Latency = SoundOutput.SamplesPerSec / 120;
 
     W32_InitDSound(Window, SoundOutput.BufferSize, SoundOutput.SamplesPerSec);
-    W32_DSoundGenerateSineWave(&SoundOutput, 0, SoundOutput.Latency * SoundOutput.BytesPerSample);
+    // W32_DSoundFillSoundBuffer(&SoundOutput, &SoundBuffer, 0, SoundOutput.Latency * SoundOutput.BytesPerSample);
+    W32_DSoundClearBuffer(&SoundOutput);
+    i32 *Samples = (i32 *)VirtualAlloc(NULL, (48000 * 2 * sizeof(i32)), MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
     GlobalSoundBuffer->Play(0, 0, DSBPLAY_LOOPING);
 
     HDC DeviceCtx = GetDC(Window); // Get DC here because we created window class with "own dc"
     MSG Message; // Declared here to reduce allocations during message loop
-    
+   
+    RAGE_GameInput Input[2] = {};
+    RAGE_GameInput *NewInput = &Input[0];
+    RAGE_GameInput *OldInput = &Input[1];
+
     LARGE_INTEGER PerfCounter;
     QueryPerformanceCounter(&PerfCounter);
 
@@ -232,32 +239,71 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         }
 
         // TODO @null0routed: Should we poll this more frequently?
-        for (DWORD CtrlrIndex = 0; CtrlrIndex < XUSER_MAX_COUNT; ++CtrlrIndex) {
+        // Max Windows Controllers = XUSER_MAX_COUNT
+        i32 ControllerCount = XUSER_MAX_COUNT;
+        if (XUSER_MAX_COUNT > ArrayCount(NewInput->Controllers)) {
+            ControllerCount = ArrayCount(NewInput->Controllers);
+        }
+        for (i32 CtrlrIndex = 0; CtrlrIndex < ControllerCount; ++CtrlrIndex) {
             XINPUT_STATE ControllerState;
             if (XInputGetState(CtrlrIndex, &ControllerState) != ERROR_SUCCESS) {
                 // OutputDebugString(L"Could not get controller state\n");
                 continue;
             }
-       
+
+            RAGE_GameControllerInput *OldController = &OldInput->Controllers[CtrlrIndex];
+            RAGE_GameControllerInput *NewController = &NewInput->Controllers[CtrlrIndex];
+            
+            XINPUT_GAMEPAD *Pad = &ControllerState.Gamepad;            
+
             bool Up = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP); 
             bool Down = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN); 
             bool Left = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT); 
-            bool Right = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT); 
-            bool Start = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_START); 
-            bool Back = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_BACK); 
-            bool LeftShoulder = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER); 
-            bool RightShoulder = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER); 
-            bool AButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_A); 
-            bool BButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_B); 
-            bool XButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_X); 
-            bool YButton = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_Y); 
+            bool Right = (ControllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
 
-            i16 StickX = ControllerState.Gamepad.sThumbLX;
-            i16 StickY = ControllerState.Gamepad.sThumbLY;
+            NewController->IsAnalog = true;
+            NewController->StartX = OldController->EndX;
+            NewController->StartY = OldController->EndY;
+            
+            r32 X;
+            if (Pad->sThumbLX < 0) {
+                X = (r32)Pad->sThumbLX / 32768.0f;
+            } else {
+                X = (r32)Pad->sThumbLX / 32767.0f;
+            }
+            NewController->MinX = NewController->MaxX = NewController->EndX = X;
+            
+            r32 Y;
+            if (Pad->sThumbLX < 0) {
+                Y = (r32)Pad->sThumbLY / 32768.0f;
+            } else {
+                Y = (r32)Pad->sThumbLY / 32767.0f;
+            }
+            NewController->MinY = NewController->MaxY = NewController->EndY = Y;
 
             // TODO @null0routed: Need to develop proper deadzone handling
-            XOffset += StickX / 4096;
-            YOffset += StickY / 4096;
+            // i16 StickX = ControllerState.Gamepad.sThumbLX;
+            // i16 StickY = ControllerState.Gamepad.sThumbLY;
+            // TODO @null0routed: Process deadzone of stick
+            // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+            // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
+            
+            W32_ProcessDigitalButton(&OldController->AButton, &NewController->AButton,
+                Pad->wButtons, XINPUT_GAMEPAD_A);
+            W32_ProcessDigitalButton(&OldController->BButton, &NewController->BButton,
+                Pad->wButtons, XINPUT_GAMEPAD_B);
+            W32_ProcessDigitalButton(&OldController->XButton, &NewController->XButton,
+                Pad->wButtons, XINPUT_GAMEPAD_X);
+            W32_ProcessDigitalButton(&OldController->YButton, &NewController->YButton,
+                Pad->wButtons, XINPUT_GAMEPAD_Y);
+            W32_ProcessDigitalButton(&OldController->Start, &NewController->Start,
+                Pad->wButtons, XINPUT_GAMEPAD_START);
+            W32_ProcessDigitalButton(&OldController->Back, &NewController->Back,
+                Pad->wButtons, XINPUT_GAMEPAD_BACK);
+            W32_ProcessDigitalButton(&OldController->LeftShoulder, &NewController->LeftShoulder,
+                Pad->wButtons, XINPUT_GAMEPAD_LEFT_SHOULDER);
+            W32_ProcessDigitalButton(&OldController->RightShoulder, &NewController->RightShoulder,
+                Pad->wButtons,XINPUT_GAMEPAD_RIGHT_SHOULDER);
         }
 
         XINPUT_VIBRATION Vibration;
@@ -273,31 +319,43 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         
         // } while (++AudioLoopCounter >= (PeriodInSamples));
         
-        GameOffscreenBuffer Buffer = {};
+        RAGE_GameOffscreenBuffer Buffer = {};
+
         Buffer.Memory = GlobalBackBuffer.BitmapMemory;
         Buffer.Width = GlobalBackBuffer.BitmapWidth;
         Buffer.Height = GlobalBackBuffer.BitmapHeight;
         Buffer.Pitch = GlobalBackBuffer.Pitch;
-        RAGE_GameUpdateAndRender(&Buffer, XOffset, YOffset);
-
+       
         // Sound output test
+        bool SoundIsValid = false;
+        DWORD ByteToLock = 0;
+        DWORD TargetCursor = 0;
+        DWORD BytesToWrite = 0;
         DWORD PlayCursorPos;
         DWORD WriteCursorPos;
         if (SUCCEEDED(GlobalSoundBuffer->GetCurrentPosition(&PlayCursorPos, &WriteCursorPos))) {
-
-            DWORD TargetCursor = (PlayCursorPos + (SoundOutput.Latency * SoundOutput.BytesPerSample)) % SoundOutput.BufferSize;
-            DWORD BytesToWrite = 0;
-            DWORD ByteToLock = (SoundOutput.RunningSampleIdx * SoundOutput.BytesPerSample) % SoundOutput.BufferSize;
+            ByteToLock = (SoundOutput.RunningSampleIdx * SoundOutput.BytesPerSample) % SoundOutput.BufferSize;
+            TargetCursor = (PlayCursorPos + (SoundOutput.Latency * SoundOutput.BytesPerSample)) % SoundOutput.BufferSize;
             if (ByteToLock > TargetCursor) {
                 BytesToWrite = SoundOutput.BufferSize - ByteToLock;
                 BytesToWrite += TargetCursor;
             } else {
                 BytesToWrite = TargetCursor - ByteToLock;
             }
-            
+            SoundIsValid = true;
+        }
+
+        RAGE_GameSoundBuffer SoundBuffer = {};
+        // TODO @null0routed: Dunno why VSCode won't let me designator initialize
+        SoundBuffer.Samples = Samples;
+        SoundBuffer.SamplesPerSec = SoundOutput.SamplesPerSec;
+        SoundBuffer.SampleCount = BytesToWrite / SoundOutput.BytesPerSample;
+        
+        RAGE_GameUpdateAndRender(&Buffer, &SoundBuffer, NewInput);
+        if (SoundIsValid) {
             // Do more stuff here
             if (BytesToWrite > 0) {
-                W32_DSoundGenerateSineWave(&SoundOutput, ByteToLock, BytesToWrite);
+                W32_DSoundFillSoundBuffer(&SoundOutput, &SoundBuffer, ByteToLock, BytesToWrite);
             }
         }    
         
@@ -320,6 +378,11 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         OutputDebugString(strBuffer);
 
         PerfCounter = PerfCounterEnd;
+
+        // Capture old input state for next frame
+        RAGE_GameInput *Temp = NewInput;
+        NewInput = OldInput;
+        OldInput = Temp; 
     }  
 
     ReleaseDC(Window, DeviceCtx);
@@ -580,7 +643,7 @@ static void W32_InitDSound(HWND Window, i32 BufferSize, i32 SamplesPerSec) {
     return;
 }
 
-static void W32_DSoundGenerateSineWave(W32_SoundOutput *SoundOutput, DWORD ByteToLock, DWORD BytesToWrite) {
+static void W32_DSoundFillSoundBuffer(W32_SoundOutput *SoundOutput, RAGE_GameSoundBuffer *SoundBuffer, DWORD ByteToLock, DWORD BytesToWrite) {
 
     void *Region1, *Region2;
     DWORD Region1Size, Region2Size;
@@ -592,32 +655,58 @@ static void W32_DSoundGenerateSineWave(W32_SoundOutput *SoundOutput, DWORD ByteT
     }
     
     // TODO @null0routed: Assert region 1 / region 2 sizes are valid
-    i32 *SampleOut = (i32 *)Region1;
+    i32 *DestSample = (i32 *)Region1;
+    i32 *SourceSample = SoundBuffer->Samples; // Start of the source buffer
+    i32 *SourceEnd = SourceSample + SoundBuffer->SampleCount; // End of the source buffer
+
     DWORD Region1SampleCount = Region1Size / SoundOutput->BytesPerSample;
     for (DWORD idx = 0; idx < Region1SampleCount; ++idx) {
-        /*
-        i32 SquareWaveOutput = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
-        *SampleOut++ = (SquareWaveOutput << (sizeof(i16)*8)) & SquareWaveOutput;
-        */
-        r32 t = 2.0f * M_PI * (r32)SoundOutput->RunningSampleIdx / (r32)SoundOutput->WavePeriod;
-        r32 SineValue = sinf(t);
-        i16 SampleValue = (i16)(SineValue * SoundOutput->Amplitude);
-        *SampleOut++ = (SampleValue << 16) & SampleValue;
+        if (SourceSample >= SourceEnd) {
+            // We've reached the end of our source data, so wrap around
+            SourceSample = SoundBuffer->Samples;
+        }
+        *DestSample++ = *SourceSample++;
         ++SoundOutput->RunningSampleIdx;
     }
     
     DWORD Region2SampleCount = Region2Size / SoundOutput->BytesPerSample;
-    SampleOut = (i32 *)Region2;
-    for (DWORD idx = 0; idx < (Region2SampleCount); ++idx) {
-        /*
-        i32 SquareWaveOutputR2 = ((RunningSampleIdx++ / (SquareWavePeriod / 2)) % 2) ? 3000 : -3000;
-        *SampleOutR2++ = (SquareWaveOutputR2 << (sizeof(i16)*8)) & SquareWaveOutputR2;
-        */
-        r32 t = 2.0f * M_PI * (r32)SoundOutput->RunningSampleIdx / (r32)SoundOutput->WavePeriod;
-        r32 SineValue = sinf(t);
-        i16 SampleValue = (i16)(SineValue * SoundOutput->Amplitude);
-        *SampleOut++ = (SampleValue << 16) & SampleValue;
+    DestSample = (i32 *)Region2;
+    for (DWORD idx = 0; idx < Region2SampleCount; ++idx) {
+        if (SourceSample >= SourceEnd) {
+            // We've reached the end of our source data, so wrap around
+            SourceSample = SoundBuffer->Samples;
+        }
+        *DestSample++ = *SourceSample++;
         ++SoundOutput->RunningSampleIdx;
+    }
+    
+    GlobalSoundBuffer->Unlock(Region1, Region1Size, Region2, Region2Size);
+}
+
+static void W32_DSoundClearBuffer(W32_SoundOutput *SoundOutput) {
+    // Null pointer check
+    if (!SoundOutput) {
+        OutputDebugString(L"Sound output not initialized.\n");
+        return;
+    }
+    
+    void *Region1, *Region2;
+    DWORD Region1Size, Region2Size;
+    
+    if(FAILED(GlobalSoundBuffer->Lock(0, SoundOutput->BufferSize, &Region1, &Region1Size, &Region2, &Region2Size, NULL))) {
+        OutputDebugString(L"Could not lock buffer\n");
+        printf("Last error: %d\n", GetLastError());
+        return;
+    }
+
+    u8 *DestSample = (u8 *)Region1;
+    for (DWORD idx = 0; idx < Region1Size; ++idx) {
+        *DestSample++ = 0;
+    }
+    
+    DestSample = (u8 *)Region2;
+    for (DWORD idx = 0; idx < Region2Size; ++idx) {
+        *DestSample++ = 0;
     }
     
     GlobalSoundBuffer->Unlock(Region1, Region1Size, Region2, Region2Size);
@@ -865,3 +954,9 @@ static int W32_XAudioSubmitSourceBuffer(IXAudio2SourceVoice *SourceVoice, XAUDIO
 
     return 0;
 }
+
+static void W32_ProcessDigitalButton(RAGE_GameButtonState *OldState, RAGE_GameButtonState *NewState,
+    DWORD ButtonState, DWORD ButtonBit) {
+    NewState->EndedDown = ((ButtonState & ButtonBit) == ButtonBit);
+    NewState->HalfTransitionCount = (OldState->EndedDown & NewState->EndedDown);
+} 

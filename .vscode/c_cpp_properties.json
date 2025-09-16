@@ -16,9 +16,12 @@
                 "_UNICODE"
             ],
             "cStandard": "c17",
-            "cppStandard": "c++17",
+            "cppStandard": "c++23",
             "windowsSdkVersion": "10.0.26100.0",
-            "compilerPath": "cl.exe"
+            "compilerPath": "cl.exe",
+            "compilerArgs": [
+                "/std:c++latest"
+            ]
         }
     ],
     "version": 4
