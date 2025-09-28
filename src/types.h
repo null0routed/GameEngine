@@ -8,6 +8,11 @@ Licensed under the MIT license
 
 #include <stdint.h>
 
+// Sizes
+#define KILOBYTES(Value) ((Value) * 1024)
+#define MEGABYTES(Value) (KILOBYTES(Value) * 1024)
+#define GIGABYTES(Value) (MEGABYTES(Value) * 1024)
+
 // Signed integers
 typedef int8_t i8;
 typedef int16_t i16;

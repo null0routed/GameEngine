@@ -20,12 +20,19 @@ Define the PlatformWindow struct
 Define the PlaformOpenWindow function
 */
 
-static void RAGE_GameUpdateAndRender(RAGE_GameOffscreenBuffer *Buffer,
+static void RAGE_GameUpdateAndRender(RAGE_GameMemory *Memory, RAGE_GameOffscreenBuffer *Buffer,
     RAGE_GameSoundBuffer *SoundBuffer, RAGE_GameInput *Input) {
-    static i32 BlueOffset = 0;
-    static i32 GreenOffset = 0;
-    static i32 Frequency = 440;
-
+    
+    Assert(sizeof(RAGE_GameState) <= Memory->PermanentStorageSize); 
+    RAGE_GameState *GameState = (RAGE_GameState *)Memory->PermanentStorage;
+    if(!Memory->IsInitialized) {
+        GameState->BlueOffset = 0;
+        GameState->GreenOffset = 0;
+        GameState->Frequency = 440;
+        // TODO @null0routed: Move this to platform layer eventually
+        Memory->IsInitialized = true;
+    }
+    
     RAGE_GameControllerInput *Input0 = &Input->Controllers[0];
     if (Input0->IsAnalog) {
         // Analog tuning
@@ -36,7 +43,7 @@ static void RAGE_GameUpdateAndRender(RAGE_GameOffscreenBuffer *Buffer,
     // How do we handle input capture here?
     // Push all events vs. normalizing
     if (Input0->AButton.EndedDown) {
-        GreenOffset += 1;
+        GameState->GreenOffset += 1;
     }
 
     /*
@@ -46,7 +53,7 @@ static void RAGE_GameUpdateAndRender(RAGE_GameOffscreenBuffer *Buffer,
 
     RAGE_OutputSound(SoundBuffer);
     
-    RAGE_RenderGradient(Buffer, BlueOffset, GreenOffset);
+    RAGE_RenderGradient(Buffer, GameState->BlueOffset, GameState->BlueOffset);
 }
 
 static void RAGE_RenderGradient(RAGE_GameOffscreenBuffer *Buffer, i32 XOffset, i32 YOffset) {

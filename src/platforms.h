@@ -12,6 +12,11 @@ Licensed under the MIT license
 #if !defined(GAMEENGINE_H)
 
 #define ArrayCount(Array) (sizeof(Array) / sizeof((Array)[0]))
+#if DEBUG
+#define Assert(Expression) if (!(Expression)) { *(int *) 0 = 0; }
+#else
+#define Assert(Expression)
+#endif
 
 // TODO @null0routed: Services that the game provides to the platform layer
 
@@ -66,12 +71,25 @@ struct RAGE_GameControllerInput {
 };
 
 struct RAGE_GameInput {
+    // TODO @null0routed: Input clocks
     RAGE_GameControllerInput Controllers[4];
 };
 
+struct RAGE_GameState {
+    i32 BlueOffset = 0;
+    i32 GreenOffset = 0;
+    i32 Frequency = 440;
+};
 
+struct RAGE_GameMemory {
+    bool IsInitialized;
+    u64 PermanentStorageSize;
+    void *PermanentStorage;
+    u64 TransientStorageSize;
+    void *TransientStorage;
+};
 
-static void RAGE_GameUpdateAndRender(RAGE_GameOffscreenBuffer *, RAGE_GameSoundBuffer *, RAGE_GameInput *);
+static void RAGE_GameUpdateAndRender(RAGE_GameMemory *, RAGE_GameSoundBuffer *, RAGE_GameInput *);
 static void RAGE_RenderGradient(RAGE_GameOffscreenBuffer *Buffer, i32 XOffset, i32 YOffset); 
 static void RAGE_OutputSound(RAGE_GameSoundBuffer *); 
 

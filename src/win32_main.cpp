@@ -219,7 +219,20 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
 
     HDC DeviceCtx = GetDC(Window); // Get DC here because we created window class with "own dc"
     MSG Message; // Declared here to reduce allocations during message loop
-   
+  
+    RAGE_GameMemory GameMemory = {};
+    GameMemory.PermanentStorageSize = MEGABYTES(60);
+    GameMemory.TransientStorageSize = GIGABYTES((u64)4);
+    
+    u64 TotalSize = GameMemory.PermanentStorageSize + GameMemory.TransientStorageSize;
+    GameMemory.PermanentStorage = VirtualAlloc(0, TotalSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    GameMemory.TransientStorage = ((u8 *)GameMemory.PermanentStorage + GameMemory.TransientStorageSize);
+
+    if (!Samples && !GameMemory.PermanentStorage) {
+        OutputDebugString(L"Failed to allocate memory");
+        return EXIT_FAILURE;
+    }
+
     RAGE_GameInput Input[2] = {};
     RAGE_GameInput *NewInput = &Input[0];
     RAGE_GameInput *OldInput = &Input[1];
@@ -351,7 +364,7 @@ int APIENTRY WinMain(HINSTANCE Instance, HINSTANCE Parent, PSTR CommandLine, int
         SoundBuffer.SamplesPerSec = SoundOutput.SamplesPerSec;
         SoundBuffer.SampleCount = BytesToWrite / SoundOutput.BytesPerSample;
         
-        RAGE_GameUpdateAndRender(&Buffer, &SoundBuffer, NewInput);
+        RAGE_GameUpdateAndRender(&GameMemory, &Buffer, &SoundBuffer, NewInput);
         if (SoundIsValid) {
             // Do more stuff here
             if (BytesToWrite > 0) {
